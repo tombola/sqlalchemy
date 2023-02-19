@@ -57,11 +57,12 @@ class PyODBCConnector(Connector):
 
     @classmethod
     def import_dbapi(cls) -> ModuleType:
-        return __import__("pyodbc")
+        return __import__('pypyodbc')
 
     def create_connect_args(self, url: URL) -> ConnectArgsType:
         opts = url.translate_connect_args(username="user")
         opts.update(url.query)
+        self.supports_unicode_binds = False
 
         keys = opts
 

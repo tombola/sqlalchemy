@@ -3190,6 +3190,7 @@ class MSDialect(default.DefaultDialect):
         self._setup_supports_comments(connection)
 
     def _setup_version_attributes(self):
+        self.server_version_info = MS_2008_VERSION
         if self.server_version_info[0] not in list(range(8, 17)):
             util.warn(
                 "Unrecognized server version info '%s'.  Some SQL Server "
