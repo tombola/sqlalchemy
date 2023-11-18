@@ -102,7 +102,17 @@ def add_class(
         module = root_module.get_module(token)
         for token in tokens:
             module = module.get_module(token)
-        module.add_class(classname, cls)
+
+        try:
+            module.add_class(classname, cls)
+        except AttributeError as ae:
+            if not isinstance(module, _ModuleMarker):
+                raise exc.InvalidRequestError(
+                    f'name "{classname}" matches both a '
+                    "class name and a module name"
+                ) from ae
+            else:
+                raise
 
 
 def remove_class(
@@ -129,7 +139,13 @@ def remove_class(
         module = root_module.get_module(token)
         for token in tokens:
             module = module.get_module(token)
-        module.remove_class(classname, cls)
+        try:
+            module.remove_class(classname, cls)
+        except AttributeError:
+            if not isinstance(module, _ModuleMarker):
+                pass
+            else:
+                raise
 
 
 def _key_is_empty(
@@ -289,7 +305,16 @@ class _ModuleMarker(ClsRegistryToken):
     def add_class(self, name: str, cls: Type[Any]) -> None:
         if name in self.contents:
             existing = cast(_MultipleClassMarker, self.contents[name])
-            existing.add_item(cls)
+            try:
+                existing.add_item(cls)
+            except AttributeError as ae:
+                if not isinstance(existing, _MultipleClassMarker):
+                    raise exc.InvalidRequestError(
+                        f'name "{name}" matches both a '
+                        "class name and a module name"
+                    ) from ae
+                else:
+                    raise
         else:
             existing = self.contents[name] = _MultipleClassMarker(
                 [cls], on_remove=lambda: self._remove_item(name)
@@ -523,12 +548,12 @@ def _resolver(
     Callable[[str], Callable[[], Union[Type[Any], Table, _ModNS]]],
     Callable[[str, bool], _class_resolver],
 ]:
-
     global _fallback_dict
 
     if _fallback_dict is None:
         import sqlalchemy
-        from sqlalchemy.orm import foreign, remote
+        from . import foreign
+        from . import remote
 
         _fallback_dict = util.immutabledict(sqlalchemy.__dict__).union(
             {"foreign": foreign, "remote": remote}

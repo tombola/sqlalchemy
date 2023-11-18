@@ -428,7 +428,7 @@ composite key to ``Writer``.   If we associate an ``Article`` with a
 particular ``Magazine``, but then associate the ``Article`` with a
 ``Writer`` that's  associated  with a *different* ``Magazine``, the ORM
 will overwrite ``Article.magazine_id`` non-deterministically, silently
-changing which magazine we refer towards; it may
+changing which magazine to which we refer; it may
 also attempt to place NULL into this column if we de-associate a
 ``Writer`` from an ``Article``.  The warning lets us know this is the case.
 
@@ -483,11 +483,6 @@ annotating with :func:`_orm.foreign`::
             "Writer.magazine_id == Article.magazine_id)",
         )
 
-.. versionchanged:: 1.0.0 the ORM will attempt to warn when a column is used
-   as the synchronization target from more than one relationship
-   simultaneously.
-
-
 Non-relational Comparisons / Materialized Path
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -527,11 +522,6 @@ we seek for a load of ``Element.descendants`` to look like:
     FROM element
     WHERE element.path LIKE ('/foo/bar2' || '/%') ORDER BY element.path
 
-.. versionadded:: 0.9.5 Support has been added to allow a single-column
-   comparison to itself within a primaryjoin condition, as well as for
-   primaryjoin conditions that use :meth:`.ColumnOperators.like` as the comparison
-   operator.
-
 .. _self_referential_many_to_many:
 
 Self-Referential Many-to-Many Relationship
@@ -550,6 +540,8 @@ and :paramref:`_orm.relationship.secondaryjoin` - the latter is significant for 
 specifies a many-to-many reference using the :paramref:`_orm.relationship.secondary` argument.
 A common situation which involves the usage of :paramref:`_orm.relationship.primaryjoin` and :paramref:`_orm.relationship.secondaryjoin`
 is when establishing a many-to-many relationship from a class to itself, as shown below::
+
+    from typing import List
 
     from sqlalchemy import Integer, ForeignKey, String, Column, Table
     from sqlalchemy.orm import DeclarativeBase
@@ -570,14 +562,21 @@ is when establishing a many-to-many relationship from a class to itself, as show
 
     class Node(Base):
         __tablename__ = "node"
-        id = mapped_column(Integer, primary_key=True)
-        label = mapped_column(String)
-        right_nodes = relationship(
+        id: Mapped[int] = mapped_column(primary_key=True)
+        label: Mapped[str]
+        right_nodes: Mapped[List["None"]] = relationship(
             "Node",
             secondary=node_to_node,
             primaryjoin=id == node_to_node.c.left_node_id,
             secondaryjoin=id == node_to_node.c.right_node_id,
-            backref="left_nodes",
+            back_populates="left_nodes",
+        )
+        left_nodes: Mapped[List["None"]] = relationship(
+            "Node",
+            secondary=node_to_node,
+            primaryjoin=id == node_to_node.c.right_node_id,
+            secondaryjoin=id == node_to_node.c.left_node_id,
+            back_populates="right_nodes",
         )
 
 Where above, SQLAlchemy can't know automatically which columns should connect

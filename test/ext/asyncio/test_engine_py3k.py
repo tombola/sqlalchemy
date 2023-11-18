@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import inspect as stdlib_inspect
+from unittest.mock import patch
 
 from sqlalchemy import Column
 from sqlalchemy import create_engine
@@ -18,6 +20,7 @@ from sqlalchemy import union_all
 from sqlalchemy.engine import cursor as _cursor
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import create_async_pool_from_url
 from sqlalchemy.ext.asyncio import engine as _async_engine
 from sqlalchemy.ext.asyncio import exc as async_exc
 from sqlalchemy.ext.asyncio import exc as asyncio_exc
@@ -31,6 +34,7 @@ from sqlalchemy.testing import combinations
 from sqlalchemy.testing import config
 from sqlalchemy.testing import engines
 from sqlalchemy.testing import eq_
+from sqlalchemy.testing import eq_regex
 from sqlalchemy.testing import expect_raises
 from sqlalchemy.testing import expect_raises_message
 from sqlalchemy.testing import fixtures
@@ -41,7 +45,7 @@ from sqlalchemy.testing import is_not
 from sqlalchemy.testing import is_true
 from sqlalchemy.testing import mock
 from sqlalchemy.testing import ne_
-from sqlalchemy.util.concurrency import greenlet_spawn
+from sqlalchemy.util import greenlet_spawn
 
 
 class AsyncFixture:
@@ -56,8 +60,6 @@ class AsyncFixture:
     def async_trans_ctx_manager_fixture(self, request, metadata):
         rollback, run_second_execute, begin_nested = request.param
 
-        from sqlalchemy import Table, Column, Integer, func, select
-
         t = Table("test", metadata, Column("data", Integer))
         eng = getattr(self, "bind", None) or config.db
 
@@ -65,7 +67,6 @@ class AsyncFixture:
 
         async def run_test(subject, trans_on_subject, execute_on_subject):
             async with subject.begin() as trans:
-
                 if begin_nested:
                     if not config.requirements.savepoints.enabled:
                         config.skip_test("savepoints not enabled")
@@ -304,7 +305,6 @@ class AsyncEngineTest(EngineFixture):
 
     @async_test
     async def test_connection_info(self, async_engine):
-
         async with async_engine.connect() as conn:
             conn.info["foo"] = "bar"
 
@@ -312,7 +312,6 @@ class AsyncEngineTest(EngineFixture):
 
     @async_test
     async def test_connection_eq_ne(self, async_engine):
-
         async with async_engine.connect() as conn:
             c2 = _async_engine.AsyncConnection(
                 async_engine, conn.sync_connection
@@ -327,7 +326,6 @@ class AsyncEngineTest(EngineFixture):
 
     @async_test
     async def test_transaction_eq_ne(self, async_engine):
-
         async with async_engine.connect() as conn:
             t1 = await conn.begin()
 
@@ -338,6 +336,67 @@ class AsyncEngineTest(EngineFixture):
             eq_(t1, t2)
 
             is_false(t1 == None)
+
+    @testing.variation("simulate_gc", [True, False])
+    def test_appropriate_warning_for_gced_connection(
+        self, async_engine, simulate_gc
+    ):
+        """test #9237 which builds upon a not really complete solution
+        added for #8419."""
+
+        async def go():
+            conn = await async_engine.connect()
+            await conn.begin()
+            await conn.execute(select(1))
+            pool_connection = await conn.get_raw_connection()
+            return pool_connection
+
+        from sqlalchemy.util.concurrency import await_only
+
+        pool_connection = await_only(go())
+
+        rec = pool_connection._connection_record
+        ref = rec.fairy_ref
+        pool = pool_connection._pool
+        echo = False
+
+        if simulate_gc:
+            # not using expect_warnings() here because we also want to do a
+            # negative test for warnings, and we want to absolutely make sure
+            # the thing here that emits the warning is the correct path
+            from sqlalchemy.pool.base import _finalize_fairy
+
+            with mock.patch.object(
+                pool._dialect,
+                "do_rollback",
+                mock.Mock(side_effect=Exception("can't run rollback")),
+            ), mock.patch("sqlalchemy.util.warn") as m:
+                _finalize_fairy(
+                    None, rec, pool, ref, echo, transaction_was_reset=False
+                )
+
+            if async_engine.dialect.has_terminate:
+                expected_msg = (
+                    "The garbage collector is trying to clean up.*which will "
+                    "be terminated."
+                )
+            else:
+                expected_msg = (
+                    "The garbage collector is trying to clean up.*which will "
+                    "be dropped, as it cannot be safely terminated."
+                )
+
+            # [1] == .args, not in 3.7
+            eq_regex(m.mock_calls[0][1][0], expected_msg)
+        else:
+            # the warning emitted by the pool is inside of a try/except:
+            # so it's impossible right now to have this warning "raise".
+            # for now, test by using mock.patch
+
+            with mock.patch("sqlalchemy.util.warn") as m:
+                pool_connection.close()
+
+            eq_(m.mock_calls, [])
 
     def test_clear_compiled_cache(self, async_engine):
         async_engine.sync_engine._compiled_cache["foo"] = "bar"
@@ -443,7 +502,6 @@ class AsyncEngineTest(EngineFixture):
 
     @async_test
     async def test_get_raw_connection(self, async_connection):
-
         pooled = await async_connection.get_raw_connection()
         is_(pooled, async_connection.sync_connection.connection)
 
@@ -527,7 +585,6 @@ class AsyncEngineTest(EngineFixture):
 
     @async_test
     async def test_connection_not_started(self, async_engine):
-
         conn = async_engine.connect()
         testing.assert_raises_message(
             asyncio_exc.AsyncContextNotStarted,
@@ -551,7 +608,6 @@ class AsyncEngineTest(EngineFixture):
         users = self.tables.users
 
         async with async_engine.begin() as conn:
-
             savepoint = await conn.begin_nested()
             await conn.execute(delete(users))
             await savepoint.rollback()
@@ -564,7 +620,6 @@ class AsyncEngineTest(EngineFixture):
         users = self.tables.users
 
         async with async_engine.begin() as conn:
-
             savepoint = await conn.begin_nested()
             await conn.execute(delete(users))
             await savepoint.commit()
@@ -587,7 +642,6 @@ class AsyncEngineTest(EngineFixture):
 
     @async_test
     async def test_conn_transaction_not_started(self, async_engine):
-
         async with async_engine.connect() as conn:
             trans = conn.begin()
             with expect_raises_message(
@@ -610,6 +664,18 @@ class AsyncEngineTest(EngineFixture):
             with expect_raises(exc.TimeoutError):
                 await engine.connect()
 
+    @testing.requires.python310
+    @async_test
+    async def test_engine_aclose(self, async_engine):
+        users = self.tables.users
+        async with contextlib.aclosing(async_engine.connect()) as conn:
+            await conn.start()
+            trans = conn.begin()
+            await trans.start()
+            await conn.execute(delete(users))
+            await trans.commit()
+        assert conn.closed
+
     @testing.requires.queue_pool
     @async_test
     async def test_pool_exhausted_no_timeout(self, async_engine):
@@ -625,13 +691,14 @@ class AsyncEngineTest(EngineFixture):
 
     @async_test
     async def test_create_async_engine_server_side_cursor(self, async_engine):
-        testing.assert_raises_message(
+        with expect_raises_message(
             asyncio_exc.AsyncMethodRequired,
             "Can't set server_side_cursors for async engine globally",
-            create_async_engine,
-            testing.db.url,
-            server_side_cursors=True,
-        )
+        ):
+            create_async_engine(
+                testing.db.url,
+                server_side_cursors=True,
+            )
 
     def test_async_engine_from_config(self):
         config = {
@@ -644,6 +711,98 @@ class AsyncEngineTest(EngineFixture):
         assert engine.url == testing.db.url
         assert engine.echo is True
         assert engine.dialect.is_async is True
+
+    def test_async_creator_and_creator(self):
+        async def ac():
+            return None
+
+        def c():
+            return None
+
+        with expect_raises_message(
+            exc.ArgumentError,
+            "Can only specify one of 'async_creator' or 'creator', "
+            "not both.",
+        ):
+            create_async_engine(testing.db.url, creator=c, async_creator=ac)
+
+    @async_test
+    async def test_async_creator_invoked(self, async_testing_engine):
+        """test for #8215"""
+
+        existing_creator = testing.db.pool._creator
+
+        async def async_creator():
+            sync_conn = await greenlet_spawn(existing_creator)
+            return sync_conn.driver_connection
+
+        async_creator = mock.Mock(side_effect=async_creator)
+
+        eq_(async_creator.mock_calls, [])
+
+        engine = async_testing_engine(options={"async_creator": async_creator})
+        async with engine.connect() as conn:
+            result = await conn.scalar(select(1))
+            eq_(result, 1)
+
+        eq_(async_creator.mock_calls, [mock.call()])
+
+    @async_test
+    async def test_async_creator_accepts_args_if_called_directly(
+        self, async_testing_engine
+    ):
+        """supplemental test for #8215.
+
+        The "async_creator" passed to create_async_engine() is expected to take
+        no arguments, the same way as "creator" passed to create_engine()
+        works.
+
+        However, the ultimate "async_creator" received by the sync-emulating
+        DBAPI *does* take arguments in its ``.connect()`` method, which will be
+        all the other arguments passed to ``.connect()``.  This functionality
+        is not currently used, however was decided that the creator should
+        internally work this way for improved flexibility; see
+        https://github.com/sqlalchemy/sqlalchemy/issues/8215#issuecomment-1181791539.
+        That contract is tested here.
+
+        """  # noqa: E501
+
+        existing_creator = testing.db.pool._creator
+
+        async def async_creator(x, y, *, z=None):
+            sync_conn = await greenlet_spawn(existing_creator)
+            return sync_conn.driver_connection
+
+        async_creator = mock.Mock(side_effect=async_creator)
+
+        async_dbapi = testing.db.dialect.loaded_dbapi
+
+        conn = await greenlet_spawn(
+            async_dbapi.connect, 5, y=10, z=8, async_creator_fn=async_creator
+        )
+        try:
+            eq_(async_creator.mock_calls, [mock.call(5, y=10, z=8)])
+        finally:
+            await greenlet_spawn(conn.close)
+
+
+class AsyncCreatePoolTest(fixtures.TestBase):
+    @config.fixture
+    def mock_create(self):
+        with patch(
+            "sqlalchemy.ext.asyncio.engine._create_pool_from_url",
+        ) as p:
+            yield p
+
+    def test_url_only(self, mock_create):
+        create_async_pool_from_url("sqlite://")
+        mock_create.assert_called_once_with("sqlite://", _is_async=True)
+
+    def test_pool_args(self, mock_create):
+        create_async_pool_from_url("sqlite://", foo=99, echo=True)
+        mock_create.assert_called_once_with(
+            "sqlite://", foo=99, echo=True, _is_async=True
+        )
 
 
 class AsyncEventTest(EngineFixture):
@@ -1132,7 +1291,6 @@ class AsyncProxyTest(EngineFixture, fixtures.TestBase):
     async def test_get_transaction(self, async_engine):
         async with async_engine.connect() as conn:
             async with conn.begin() as trans:
-
                 is_(trans.connection, conn)
                 is_(conn.get_transaction(), trans)
 
@@ -1165,7 +1323,6 @@ class AsyncProxyTest(EngineFixture, fixtures.TestBase):
             )
 
     def test_regenerate_connection(self, connection):
-
         async_connection = AsyncConnection._retrieve_proxy_for_target(
             connection
         )
@@ -1218,9 +1375,7 @@ class AsyncProxyTest(EngineFixture, fixtures.TestBase):
         eq_(len(ReversibleProxy._proxy_objects), 0)
 
     def test_regen_conn_but_not_engine(self, async_engine):
-
         with async_engine.sync_engine.connect() as sync_conn:
-
             async_conn = AsyncConnection._retrieve_proxy_for_target(sync_conn)
             async_conn2 = AsyncConnection._retrieve_proxy_for_target(sync_conn)
 

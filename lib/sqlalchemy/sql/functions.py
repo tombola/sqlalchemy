@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import datetime
+import decimal
 from typing import Any
 from typing import cast
 from typing import Dict
@@ -54,7 +55,6 @@ from .elements import WithinGroup
 from .selectable import FromClause
 from .selectable import Select
 from .selectable import TableValuedAlias
-from .sqltypes import _N
 from .sqltypes import TableValueType
 from .type_api import TypeEngine
 from .visitors import InternalTraversal
@@ -99,6 +99,11 @@ def register_function(identifier, fn, package="_default"):
 
 class FunctionElement(Executable, ColumnElement[_T], FromClause, Generative):
     """Base for SQL function-oriented constructs.
+
+    This is a `generic type <https://peps.python.org/pep-0484/#generics>`_,
+    meaning that type checkers and IDEs can be instructed on the types to
+    expect in a :class:`_engine.Result` for this function. See
+    :class:`.GenericFunction` for an example of how this is done.
 
     .. seealso::
 
@@ -435,9 +440,6 @@ class FunctionElement(Executable, ColumnElement[_T], FromClause, Generative):
 
         See :func:`_expression.within_group` for a full description.
 
-        .. versionadded:: 1.1
-
-
         .. seealso::
 
             :ref:`tutorial_functions_within_group` -
@@ -461,8 +463,6 @@ class FunctionElement(Executable, ColumnElement[_T], FromClause, Generative):
 
             from sqlalchemy import funcfilter
             funcfilter(func.count(1), True)
-
-        .. versionadded:: 1.0.0
 
         .. seealso::
 
@@ -911,11 +911,14 @@ class _FunctionGenerator:
         )
 
     if TYPE_CHECKING:
-
         # START GENERATED FUNCTION ACCESSORS
 
         # code within this block is **programmatically,
         # statically generated** by tools/generate_sql_functions.py
+
+        @property
+        def aggregate_strings(self) -> Type[aggregate_strings]:
+            ...
 
         @property
         def ansifunction(self) -> Type[AnsiFunction[Any]]:
@@ -950,7 +953,7 @@ class _FunctionGenerator:
             ...
 
         @property
-        def cume_dist(self) -> Type[cume_dist[Any]]:
+        def cume_dist(self) -> Type[cume_dist]:
             ...
 
         @property
@@ -1014,7 +1017,7 @@ class _FunctionGenerator:
             ...
 
         @property
-        def percent_rank(self) -> Type[percent_rank[Any]]:
+        def percent_rank(self) -> Type[percent_rank]:
             ...
 
         @property
@@ -1248,6 +1251,19 @@ class GenericFunction(Function[_T]):
 
         >>> print(func.geo.buffer())
         {printsql}"ST_Buffer"()
+
+    Type parameters for this class as a
+    `generic type <https://peps.python.org/pep-0484/#generics>`_ can be passed
+    and should match the type seen in a :class:`_engine.Result`. For example::
+
+        class as_utc(GenericFunction[datetime.datetime]):
+            type = DateTime()
+            inherit_cache = True
+
+    The above indicates that the following expression returns a ``datetime``
+    object::
+
+        connection.scalar(select(func.as_utc()))
 
     .. versionadded:: 1.3.13  The :class:`.quoted_name` construct is now
        recognized for quoting when used with the "name" attribute of the
@@ -1569,8 +1585,6 @@ class array_agg(GenericFunction[_T]):
 
         stmt = select(func.array_agg(table.c.values)[2:5])
 
-    .. versionadded:: 1.1
-
     .. seealso::
 
         :func:`_postgresql.array_agg` - PostgreSQL-specific version that
@@ -1591,7 +1605,6 @@ class array_agg(GenericFunction[_T]):
 
         default_array_type = kwargs.pop("_default_array_type", sqltypes.ARRAY)
         if "type_" not in kwargs:
-
             type_from_args = _type_from_args(fn_args)
             if isinstance(type_from_args, sqltypes.ARRAY):
                 kwargs["type_"] = type_from_args
@@ -1628,8 +1641,6 @@ class mode(OrderedSetAgg[_T]):
 
     The return type of this function is the same as the sort expression.
 
-    .. versionadded:: 1.1
-
     """
 
     inherit_cache = True
@@ -1644,8 +1655,6 @@ class percentile_cont(OrderedSetAgg[_T]):
     The return type of this function is the same as the sort expression,
     or if the arguments are an array, an :class:`_types.ARRAY` of the sort
     expression's type.
-
-    .. versionadded:: 1.1
 
     """
 
@@ -1663,8 +1672,6 @@ class percentile_disc(OrderedSetAgg[_T]):
     or if the arguments are an array, an :class:`_types.ARRAY` of the sort
     expression's type.
 
-    .. versionadded:: 1.1
-
     """
 
     array_for_multi_clause = True
@@ -1678,8 +1685,6 @@ class rank(GenericFunction[int]):
     modifier to supply a sort expression to operate upon.
 
     The return type of this function is :class:`.Integer`.
-
-    .. versionadded:: 1.1
 
     """
 
@@ -1695,15 +1700,13 @@ class dense_rank(GenericFunction[int]):
 
     The return type of this function is :class:`.Integer`.
 
-    .. versionadded:: 1.1
-
     """
 
     type = sqltypes.Integer()
     inherit_cache = True
 
 
-class percent_rank(GenericFunction[_N]):
+class percent_rank(GenericFunction[decimal.Decimal]):
     """Implement the ``percent_rank`` hypothetical-set aggregate function.
 
     This function must be used with the :meth:`.FunctionElement.within_group`
@@ -1711,15 +1714,13 @@ class percent_rank(GenericFunction[_N]):
 
     The return type of this function is :class:`.Numeric`.
 
-    .. versionadded:: 1.1
-
     """
 
-    type: sqltypes.Numeric[_N] = sqltypes.Numeric()
+    type: sqltypes.Numeric[decimal.Decimal] = sqltypes.Numeric()
     inherit_cache = True
 
 
-class cume_dist(GenericFunction[_N]):
+class cume_dist(GenericFunction[decimal.Decimal]):
     """Implement the ``cume_dist`` hypothetical-set aggregate function.
 
     This function must be used with the :meth:`.FunctionElement.within_group`
@@ -1727,11 +1728,9 @@ class cume_dist(GenericFunction[_N]):
 
     The return type of this function is :class:`.Numeric`.
 
-    .. versionadded:: 1.1
-
     """
 
-    type: sqltypes.Numeric[_N] = sqltypes.Numeric()
+    type: sqltypes.Numeric[decimal.Decimal] = sqltypes.Numeric()
     inherit_cache = True
 
 
@@ -1800,3 +1799,30 @@ class grouping_sets(GenericFunction[_T]):
     """
     _has_args = True
     inherit_cache = True
+
+
+class aggregate_strings(GenericFunction[str]):
+    """Implement a generic string aggregation function.
+
+    This function will concatenate non-null values into a string and
+    separate the values by a delimiter.
+
+    This function is compiled on a per-backend basis, into functions
+    such as ``group_concat()``, ``string_agg()``, or ``LISTAGG()``.
+
+    e.g. Example usage with delimiter '.'::
+
+        stmt = select(func.aggregate_strings(table.c.str_col, "."))
+
+    The return type of this function is :class:`.String`.
+
+    .. versionadded: 2.0.21
+
+    """
+
+    type = sqltypes.String()
+    _has_args = True
+    inherit_cache = True
+
+    def __init__(self, clause, separator):
+        super().__init__(clause, separator)

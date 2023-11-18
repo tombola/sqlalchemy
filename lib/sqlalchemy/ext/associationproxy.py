@@ -28,6 +28,7 @@ from typing import ItemsView
 from typing import Iterable
 from typing import Iterator
 from typing import KeysView
+from typing import List
 from typing import Mapping
 from typing import MutableMapping
 from typing import MutableSequence
@@ -90,6 +91,7 @@ def association_proxy(
     proxy_bulk_set: Optional[_ProxyBulkSetProtocol] = None,
     info: Optional[_InfoType] = None,
     cascade_scalar_deletes: bool = False,
+    create_on_none_assignment: bool = False,
     init: Union[_NoArg, bool] = _NoArg.NO_ARG,
     repr: Union[_NoArg, bool] = _NoArg.NO_ARG,  # noqa: A002
     default: Optional[Any] = _NoArg.NO_ARG,
@@ -154,6 +156,14 @@ def association_proxy(
         .. seealso::
 
             :ref:`cascade_scalar_deletes` - complete usage example
+
+    :param create_on_none_assignment: when True, indicates that setting
+      the proxied value to ``None`` should **create** the source object
+      if it does not exist, using the creator.  Only applies to scalar
+      attributes.  This is mutually exclusive
+      vs. the :paramref:`.assocation_proxy.cascade_scalar_deletes`.
+
+      .. versionadded:: 2.0.18
 
     :param init: Specific to :ref:`orm_declarative_native_dataclasses`,
      specifies if the mapped attribute should be part of the ``__init__()``
@@ -225,6 +235,7 @@ def association_proxy(
         proxy_bulk_set=proxy_bulk_set,
         info=info,
         cascade_scalar_deletes=cascade_scalar_deletes,
+        create_on_none_assignment=create_on_none_assignment,
         attribute_options=_AttributeOptions(
             init, repr, default, default_factory, compare, kw_only
         ),
@@ -319,6 +330,8 @@ class _AssociationProxyProtocol(Protocol[_T]):
     key: str
     target_collection: str
     value_attr: str
+    cascade_scalar_deletes: bool
+    create_on_none_assignment: bool
     getset_factory: Optional[_GetSetFactoryProtocol]
     proxy_factory: Optional[_ProxyFactoryProtocol]
     proxy_bulk_set: Optional[_ProxyBulkSetProtocol]
@@ -336,11 +349,6 @@ class _AssociationProxyProtocol(Protocol[_T]):
         self, collection_class: Any
     ) -> Tuple[_GetterProtocol[Any], _SetterProtocol]:
         ...
-
-
-_SelfAssociationProxy = TypeVar(
-    "_SelfAssociationProxy", bound="AssociationProxy[Any]"
-)
 
 
 class AssociationProxy(
@@ -365,6 +373,7 @@ class AssociationProxy(
         proxy_bulk_set: Optional[_ProxyBulkSetProtocol] = None,
         info: Optional[_InfoType] = None,
         cascade_scalar_deletes: bool = False,
+        create_on_none_assignment: bool = False,
         attribute_options: Optional[_AttributeOptions] = None,
     ):
         """Construct a new :class:`.AssociationProxy`.
@@ -382,7 +391,14 @@ class AssociationProxy(
         self.getset_factory = getset_factory
         self.proxy_factory = proxy_factory
         self.proxy_bulk_set = proxy_bulk_set
+
+        if cascade_scalar_deletes and create_on_none_assignment:
+            raise exc.ArgumentError(
+                "The cascade_scalar_deletes and create_on_none_assignment "
+                "parameters are mutually exclusive."
+            )
         self.cascade_scalar_deletes = cascade_scalar_deletes
+        self.create_on_none_assignment = create_on_none_assignment
 
         self.key = "_%s_%s_%s" % (
             type(self).__name__,
@@ -403,9 +419,7 @@ class AssociationProxy(
             self._attribute_options = _DEFAULT_ATTRIBUTE_OPTIONS
 
     @overload
-    def __get__(
-        self: _SelfAssociationProxy, instance: Any, owner: Literal[None]
-    ) -> _SelfAssociationProxy:
+    def __get__(self, instance: Literal[None], owner: Literal[None]) -> Self:
         ...
 
     @overload
@@ -548,9 +562,10 @@ class AssociationProxy(
         )
 
 
-_SelfAssociationProxyInstance = TypeVar(
-    "_SelfAssociationProxyInstance", bound="AssociationProxyInstance[Any]"
-)
+# the pep-673 Self type does not work in Mypy for a "hybrid"
+# style method that returns type or Self, so for one specific case
+# we still need to use the pre-pep-673 workaround.
+_Self = TypeVar("_Self", bound="AssociationProxyInstance[Any]")
 
 
 class AssociationProxyInstance(SQLORMOperations[_T]):
@@ -846,7 +861,7 @@ class AssociationProxyInstance(SQLORMOperations[_T]):
         return self.parent.info
 
     @overload
-    def get(self: Self, obj: Literal[None]) -> Self:
+    def get(self: _Self, obj: Literal[None]) -> _Self:
         ...
 
     @overload
@@ -896,7 +911,10 @@ class AssociationProxyInstance(SQLORMOperations[_T]):
             )
             target = getattr(obj, self.target_collection)
             if target is None:
-                if values is None:
+                if (
+                    values is None
+                    and not self.parent.create_on_none_assignment
+                ):
                     return
                 setattr(obj, self.target_collection, creator(values))
             else:
@@ -1029,7 +1047,7 @@ class AssociationProxyInstance(SQLORMOperations[_T]):
 
         target_assoc = self._unwrap_target_assoc_proxy
         if target_assoc is not None:
-            inner = target_assoc._criterion_exists(  # type: ignore
+            inner = target_assoc._criterion_exists(
                 criterion=criterion, **kwargs
             )
             return self._comparator._criterion_exists(inner)
@@ -1245,7 +1263,6 @@ class ObjectAssociationProxyInstance(AssociationProxyInstance[_T]):
                 "contains() doesn't apply to a scalar object endpoint; use =="
             )
         else:
-
             return self._comparator._criterion_exists(
                 **{self.value_attr: other}
             )
@@ -1552,47 +1569,47 @@ class _AssociationList(_AssociationSingleItem[_T], MutableSequence[_T]):
     def __ne__(self, other: object) -> bool:
         return list(self) != other
 
-    def __lt__(self, other: list[_T]) -> bool:
+    def __lt__(self, other: List[_T]) -> bool:
         return list(self) < other
 
-    def __le__(self, other: list[_T]) -> bool:
+    def __le__(self, other: List[_T]) -> bool:
         return list(self) <= other
 
-    def __gt__(self, other: list[_T]) -> bool:
+    def __gt__(self, other: List[_T]) -> bool:
         return list(self) > other
 
-    def __ge__(self, other: list[_T]) -> bool:
+    def __ge__(self, other: List[_T]) -> bool:
         return list(self) >= other
 
-    def __add__(self, other: list[_T]) -> list[_T]:
+    def __add__(self, other: List[_T]) -> List[_T]:
         try:
             other = list(other)
         except TypeError:
             return NotImplemented
         return list(self) + other
 
-    def __radd__(self, other: list[_T]) -> list[_T]:
+    def __radd__(self, other: List[_T]) -> List[_T]:
         try:
             other = list(other)
         except TypeError:
             return NotImplemented
         return other + list(self)
 
-    def __mul__(self, n: SupportsIndex) -> list[_T]:
+    def __mul__(self, n: SupportsIndex) -> List[_T]:
         if not isinstance(n, int):
             return NotImplemented
         return list(self) * n
 
-    def __rmul__(self, n: SupportsIndex) -> list[_T]:
+    def __rmul__(self, n: SupportsIndex) -> List[_T]:
         if not isinstance(n, int):
             return NotImplemented
         return n * list(self)
 
-    def __iadd__(self: Self, iterable: Iterable[_T]) -> Self:
+    def __iadd__(self, iterable: Iterable[_T]) -> Self:
         self.extend(iterable)
         return self
 
-    def __imul__(self: Self, n: SupportsIndex) -> Self:
+    def __imul__(self, n: SupportsIndex) -> Self:
         # unlike a regular list *=, proxied __imul__ will generate unique
         # backing objects for each copy.  *= on proxied lists is a bit of
         # a stretch anyhow, and this interpretation of the __imul__ contract
@@ -1616,7 +1633,7 @@ class _AssociationList(_AssociationSingleItem[_T], MutableSequence[_T]):
             ls = list(self)
             return ls.index(value, *arg)
 
-    def copy(self) -> list[_T]:
+    def copy(self) -> List[_T]:
         return list(self)
 
     def __repr__(self) -> str:
@@ -1684,18 +1701,18 @@ class _AssociationDict(_AssociationCollection[_VT], MutableMapping[_KT, _VT]):
         return repr(dict(self))
 
     @overload
-    def get(self, __key: _KT) -> Optional[_VT]:
+    def get(self, __key: _KT, /) -> Optional[_VT]:
         ...
 
     @overload
-    def get(self, __key: _KT, default: Union[_VT, _T]) -> Union[_VT, _T]:
+    def get(self, __key: _KT, /, default: Union[_VT, _T]) -> Union[_VT, _T]:
         ...
 
     def get(
-        self, key: _KT, default: Optional[Union[_VT, _T]] = None
+        self, __key: _KT, /, default: Optional[Union[_VT, _T]] = None
     ) -> Union[_VT, _T, None]:
         try:
-            return self[key]
+            return self[__key]
         except KeyError:
             return default
 
@@ -1721,14 +1738,16 @@ class _AssociationDict(_AssociationCollection[_VT], MutableMapping[_KT, _VT]):
         return ValuesView(self)
 
     @overload
-    def pop(self, __key: _KT) -> _VT:
+    def pop(self, __key: _KT, /) -> _VT:
         ...
 
     @overload
-    def pop(self, __key: _KT, default: Union[_VT, _T] = ...) -> Union[_VT, _T]:
+    def pop(
+        self, __key: _KT, /, default: Union[_VT, _T] = ...
+    ) -> Union[_VT, _T]:
         ...
 
-    def pop(self, __key: _KT, *arg: Any, **kw: Any) -> Union[_VT, _T]:
+    def pop(self, __key: _KT, /, *arg: Any, **kw: Any) -> Union[_VT, _T]:
         member = self.col.pop(__key, *arg, **kw)
         return self._get(member)
 
@@ -1776,7 +1795,7 @@ class _AssociationDict(_AssociationCollection[_VT], MutableMapping[_KT, _VT]):
         for key in removals:
             del self[key]
 
-    def copy(self) -> dict[_KT, _VT]:
+    def copy(self) -> Dict[_KT, _VT]:
         return dict(self.items())
 
     def __hash__(self) -> NoReturn:
@@ -1825,19 +1844,19 @@ class _AssociationSet(_AssociationSingleItem[_T], MutableSet[_T]):
             yield self._get(member)
         return
 
-    def add(self, __element: _T) -> None:
+    def add(self, __element: _T, /) -> None:
         if __element not in self:
             self.col.add(self._create(__element))
 
     # for discard and remove, choosing a more expensive check strategy rather
     # than call self.creator()
-    def discard(self, __element: _T) -> None:
+    def discard(self, __element: _T, /) -> None:
         for member in self.col:
             if self._get(member) == __element:
                 self.col.discard(member)
                 break
 
-    def remove(self, __element: _T) -> None:
+    def remove(self, __element: _T, /) -> None:
         for member in self.col:
             if self._get(member) == __element:
                 self.col.discard(member)
@@ -1874,7 +1893,7 @@ class _AssociationSet(_AssociationSingleItem[_T], MutableSet[_T]):
             remover(member)
 
     def __ior__(  # type: ignore
-        self: Self, other: AbstractSet[_S]
+        self, other: AbstractSet[_S]
     ) -> MutableSet[Union[_T, _S]]:
         if not collections._set_binops_check_strict(self, other):
             raise NotImplementedError()
@@ -1902,7 +1921,7 @@ class _AssociationSet(_AssociationSingleItem[_T], MutableSet[_T]):
             for value in other:
                 self.discard(value)
 
-    def __isub__(self: Self, s: AbstractSet[Any]) -> Self:
+    def __isub__(self, s: AbstractSet[Any]) -> Self:
         if not collections._set_binops_check_strict(self, s):
             raise NotImplementedError()
         for value in s:
@@ -1926,7 +1945,7 @@ class _AssociationSet(_AssociationSingleItem[_T], MutableSet[_T]):
             for value in add:
                 self.add(value)
 
-    def __iand__(self: Self, s: AbstractSet[Any]) -> Self:
+    def __iand__(self, s: AbstractSet[Any]) -> Self:
         if not collections._set_binops_check_strict(self, s):
             raise NotImplementedError()
         want = self.intersection(s)
@@ -1944,7 +1963,7 @@ class _AssociationSet(_AssociationSingleItem[_T], MutableSet[_T]):
         return set(self).symmetric_difference(__s)
 
     def __xor__(self, s: AbstractSet[_S]) -> MutableSet[Union[_T, _S]]:
-        return self.symmetric_difference(s)  # type: ignore
+        return self.symmetric_difference(s)
 
     def symmetric_difference_update(self, other: Iterable[Any]) -> None:
         want, have = self.symmetric_difference(other), set(self)

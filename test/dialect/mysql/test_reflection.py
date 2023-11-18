@@ -238,14 +238,19 @@ class TypeReflectionTest(fixtures.TestBase):
         metadata,
         connection,
     ):
-
         specs = [(mysql.ENUM("", "fleem"), mysql.ENUM("", "fleem"))]
 
         self._run_test(metadata, connection, specs, ["enums"])
 
+    @testing.only_on("mariadb>=10.7")
+    def test_uuid(self, metadata, connection):
+        specs = [
+            (mysql.UUID(), mysql.UUID()),
+        ]
+        self._run_test(metadata, connection, specs, [])
+
 
 class ReflectionTest(fixtures.TestBase, AssertsCompiledSQL):
-
     __only_on__ = "mysql", "mariadb"
     __backend__ = True
 
@@ -432,7 +437,6 @@ class ReflectionTest(fixtures.TestBase, AssertsCompiledSQL):
         eq_(ref_kw["partitions"], "6")
 
     def test_reflection_with_subpartition_options(self, connection, metadata):
-
         subpartititon_text = """HASH (TO_DAYS (c2))
                                 SUBPARTITIONS 2(
                                  PARTITION p0 VALUES LESS THAN (1990),
@@ -1367,6 +1371,29 @@ class ReflectionTest(fixtures.TestBase, AssertsCompiledSQL):
                 },
             },
         )
+
+    def test_reflect_comment_escapes(self, connection, metadata):
+        c = "\\ - \\\\ - \\0 - \\a - \\b - \\t - \\n - \\v - \\f - \\r"
+        Table("t", metadata, Column("c", Integer, comment=c), comment=c)
+        metadata.create_all(connection)
+
+        insp = inspect(connection)
+        tc = insp.get_table_comment("t")
+        eq_(tc, {"text": c})
+        col = insp.get_columns("t")[0]
+        eq_({col["name"]: col["comment"]}, {"c": c})
+
+    def test_reflect_comment_unicode(self, connection, metadata):
+        c = "☁️✨🐍🁰🝝"
+        c_exp = "☁️✨???"
+        Table("t", metadata, Column("c", Integer, comment=c), comment=c)
+        metadata.create_all(connection)
+
+        insp = inspect(connection)
+        tc = insp.get_table_comment("t")
+        eq_(tc, {"text": c_exp})
+        col = insp.get_columns("t")[0]
+        eq_({col["name"]: col["comment"]}, {"c": c_exp})
 
 
 class RawReflectionTest(fixtures.TestBase):

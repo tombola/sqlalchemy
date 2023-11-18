@@ -40,8 +40,11 @@ from typing import cast
 from typing import Dict
 from typing import Generic
 from typing import Optional
+from typing import overload
 from typing import Set
+from typing import Tuple
 from typing import Type
+from typing import TYPE_CHECKING
 from typing import TypeVar
 from typing import Union
 
@@ -51,6 +54,9 @@ from ..util.typing import Literal
 from ..util.typing import Protocol
 
 if typing.TYPE_CHECKING:
+    from ._typing import ColumnExpressionArgument
+    from .cache_key import CacheConst
+    from .elements import ColumnElement
     from .type_api import TypeEngine
 
 _T = TypeVar("_T", bound=Any)
@@ -64,9 +70,29 @@ class OperatorType(Protocol):
 
     __name__: str
 
+    @overload
+    def __call__(
+        self,
+        left: ColumnExpressionArgument[Any],
+        right: Optional[Any] = None,
+        *other: Any,
+        **kwargs: Any,
+    ) -> ColumnElement[Any]:
+        ...
+
+    @overload
     def __call__(
         self,
         left: Operators,
+        right: Optional[Any] = None,
+        *other: Any,
+        **kwargs: Any,
+    ) -> Operators:
+        ...
+
+    def __call__(
+        self,
+        left: Any,
         right: Optional[Any] = None,
         *other: Any,
         **kwargs: Any,
@@ -281,7 +307,7 @@ class Operators:
         )
 
         def against(other: Any) -> Operators:
-            return operator(self, other)  # type: ignore
+            return operator(self, other)
 
         return against
 
@@ -414,11 +440,36 @@ class custom_op(OperatorType, Generic[_T]):
         self.python_impl = python_impl
 
     def __eq__(self, other: Any) -> bool:
-        return isinstance(other, custom_op) and other.opstring == self.opstring
+        return (
+            isinstance(other, custom_op)
+            and other._hash_key() == self._hash_key()
+        )
 
     def __hash__(self) -> int:
-        return id(self)
+        return hash(self._hash_key())
 
+    def _hash_key(self) -> Union[CacheConst, Tuple[Any, ...]]:
+        return (
+            self.__class__,
+            self.opstring,
+            self.precedence,
+            self.is_comparison,
+            self.natural_self_precedent,
+            self.eager_grouping,
+            self.return_type._static_cache_key if self.return_type else None,
+        )
+
+    @overload
+    def __call__(
+        self,
+        left: ColumnExpressionArgument[Any],
+        right: Optional[Any] = None,
+        *other: Any,
+        **kwargs: Any,
+    ) -> ColumnElement[Any]:
+        ...
+
+    @overload
     def __call__(
         self,
         left: Operators,
@@ -426,8 +477,17 @@ class custom_op(OperatorType, Generic[_T]):
         *other: Any,
         **kwargs: Any,
     ) -> Operators:
+        ...
+
+    def __call__(
+        self,
+        left: Any,
+        right: Optional[Any] = None,
+        *other: Any,
+        **kwargs: Any,
+    ) -> Operators:
         if hasattr(left, "__sa_operate__"):
-            return left.operate(self, right, *other, **kwargs)
+            return left.operate(self, right, *other, **kwargs)  # type: ignore
         elif self.python_impl:
             return self.python_impl(left, right, *other, **kwargs)  # type: ignore  # noqa: E501
         else:
@@ -509,8 +569,16 @@ class ColumnOperators(Operators):
         """
         return self.operate(le, other)
 
-    # TODO: not sure why we have this
-    __hash__ = Operators.__hash__  # type: ignore
+    # ColumnOperators defines an __eq__ so it must explicitly declare also
+    # an hash or it's set to None by python:
+    # https://docs.python.org/3/reference/datamodel.html#object.__hash__
+    if TYPE_CHECKING:
+
+        def __hash__(self) -> int:
+            ...
+
+    else:
+        __hash__ = Operators.__hash__
 
     def __eq__(self, other: Any) -> ColumnOperators:  # type: ignore[override]
         """Implement the ``==`` operator.
@@ -536,8 +604,6 @@ class ColumnOperators(Operators):
         Renders "a IS DISTINCT FROM b" on most platforms;
         on some such as SQLite may render "a IS NOT b".
 
-        .. versionadded:: 1.1
-
         """
         return self.operate(is_distinct_from, other)
 
@@ -551,13 +617,17 @@ class ColumnOperators(Operators):
            renamed from ``isnot_distinct_from()`` in previous releases.
            The previous name remains available for backwards compatibility.
 
-        .. versionadded:: 1.1
-
         """
         return self.operate(is_not_distinct_from, other)
 
     # deprecated 1.4; see #5435
-    isnot_distinct_from = is_not_distinct_from
+    if TYPE_CHECKING:
+
+        def isnot_distinct_from(self, other: Any) -> ColumnOperators:
+            ...
+
+    else:
+        isnot_distinct_from = is_not_distinct_from
 
     def __gt__(self, other: Any) -> ColumnOperators:
         """Implement the ``>`` operator.
@@ -690,6 +760,90 @@ class ColumnOperators(Operators):
         """
         return self.operate(ilike_op, other, escape=escape)
 
+    def bitwise_xor(self, other: Any) -> ColumnOperators:
+        """Produce a bitwise XOR operation, typically via the ``^``
+        operator, or ``#`` for PostgreSQL.
+
+        .. versionadded:: 2.0.2
+
+        .. seealso::
+
+            :ref:`operators_bitwise`
+
+        """
+
+        return self.operate(bitwise_xor_op, other)
+
+    def bitwise_or(self, other: Any) -> ColumnOperators:
+        """Produce a bitwise OR operation, typically via the ``|``
+        operator.
+
+        .. versionadded:: 2.0.2
+
+        .. seealso::
+
+            :ref:`operators_bitwise`
+
+        """
+
+        return self.operate(bitwise_or_op, other)
+
+    def bitwise_and(self, other: Any) -> ColumnOperators:
+        """Produce a bitwise AND operation, typically via the ``&``
+        operator.
+
+        .. versionadded:: 2.0.2
+
+        .. seealso::
+
+            :ref:`operators_bitwise`
+
+        """
+
+        return self.operate(bitwise_and_op, other)
+
+    def bitwise_not(self) -> ColumnOperators:
+        """Produce a bitwise NOT operation, typically via the ``~``
+        operator.
+
+        .. versionadded:: 2.0.2
+
+        .. seealso::
+
+            :ref:`operators_bitwise`
+
+        """
+
+        return self.operate(bitwise_not_op)
+
+    def bitwise_lshift(self, other: Any) -> ColumnOperators:
+        """Produce a bitwise LSHIFT operation, typically via the ``<<``
+        operator.
+
+        .. versionadded:: 2.0.2
+
+        .. seealso::
+
+            :ref:`operators_bitwise`
+
+        """
+
+        return self.operate(bitwise_lshift_op, other)
+
+    def bitwise_rshift(self, other: Any) -> ColumnOperators:
+        """Produce a bitwise RSHIFT operation, typically via the ``>>``
+        operator.
+
+        .. versionadded:: 2.0.2
+
+        .. seealso::
+
+            :ref:`operators_bitwise`
+
+        """
+
+        return self.operate(bitwise_rshift_op, other)
+
     def in_(self, other: Any) -> ColumnOperators:
         """Implement the ``in`` operator.
 
@@ -808,7 +962,13 @@ class ColumnOperators(Operators):
         return self.operate(not_in_op, other)
 
     # deprecated 1.4; see #5429
-    notin_ = not_in
+    if TYPE_CHECKING:
+
+        def notin_(self, other: Any) -> ColumnOperators:
+            ...
+
+    else:
+        notin_ = not_in
 
     def not_like(
         self, other: Any, escape: Optional[str] = None
@@ -827,10 +987,18 @@ class ColumnOperators(Operators):
             :meth:`.ColumnOperators.like`
 
         """
-        return self.operate(notlike_op, other, escape=escape)
+        return self.operate(not_like_op, other, escape=escape)
 
     # deprecated 1.4; see #5435
-    notlike = not_like
+    if TYPE_CHECKING:
+
+        def notlike(
+            self, other: Any, escape: Optional[str] = None
+        ) -> ColumnOperators:
+            ...
+
+    else:
+        notlike = not_like
 
     def not_ilike(
         self, other: Any, escape: Optional[str] = None
@@ -849,10 +1017,18 @@ class ColumnOperators(Operators):
             :meth:`.ColumnOperators.ilike`
 
         """
-        return self.operate(notilike_op, other, escape=escape)
+        return self.operate(not_ilike_op, other, escape=escape)
 
     # deprecated 1.4; see #5435
-    notilike = not_ilike
+    if TYPE_CHECKING:
+
+        def notilike(
+            self, other: Any, escape: Optional[str] = None
+        ) -> ColumnOperators:
+            ...
+
+    else:
+        notilike = not_ilike
 
     def is_(self, other: Any) -> ColumnOperators:
         """Implement the ``IS`` operator.
@@ -885,7 +1061,13 @@ class ColumnOperators(Operators):
         return self.operate(is_not, other)
 
     # deprecated 1.4; see #5429
-    isnot = is_not
+    if TYPE_CHECKING:
+
+        def isnot(self, other: Any) -> ColumnOperators:
+            ...
+
+    else:
+        isnot = is_not
 
     def startswith(
         self,
@@ -1442,14 +1624,22 @@ class ColumnOperators(Operators):
 
         :param pattern: The regular expression pattern string or column
           clause.
-        :param flags: Any regular expression string flags to apply. Flags
-          tend to be backend specific. It can be a string or a column clause.
+        :param flags: Any regular expression string flags to apply, passed as
+          plain Python string only.  These flags are backend specific.
           Some backends, like PostgreSQL and MariaDB, may alternatively
           specify the flags as part of the pattern.
           When using the ignore case flag 'i' in PostgreSQL, the ignore case
           regexp match operator ``~*`` or ``!~*`` will be used.
 
         .. versionadded:: 1.4
+
+        .. versionchanged:: 1.4.48, 2.0.18  Note that due to an implementation
+           error, the "flags" parameter previously accepted SQL expression
+           objects such as column expressions in addition to plain Python
+           strings.   This implementation did not work correctly with caching
+           and was removed; strings only should be passed for the "flags"
+           parameter, as these flags are rendered as literal inline values
+           within SQL expressions.
 
         .. seealso::
 
@@ -1487,12 +1677,21 @@ class ColumnOperators(Operators):
         :param pattern: The regular expression pattern string or column
           clause.
         :param pattern: The replacement string or column clause.
-        :param flags: Any regular expression string flags to apply. Flags
-          tend to be backend specific. It can be a string or a column clause.
+        :param flags: Any regular expression string flags to apply, passed as
+          plain Python string only.  These flags are backend specific.
           Some backends, like PostgreSQL and MariaDB, may alternatively
           specify the flags as part of the pattern.
 
         .. versionadded:: 1.4
+
+        .. versionchanged:: 1.4.48, 2.0.18  Note that due to an implementation
+           error, the "flags" parameter previously accepted SQL expression
+           objects such as column expressions in addition to plain Python
+           strings.   This implementation did not work correctly with caching
+           and was removed; strings only should be passed for the "flags"
+           parameter, as these flags are rendered as literal inline values
+           within SQL expressions.
+
 
         .. seealso::
 
@@ -1527,7 +1726,13 @@ class ColumnOperators(Operators):
         return self.operate(nulls_first_op)
 
     # deprecated 1.4; see #5435
-    nullsfirst = nulls_first
+    if TYPE_CHECKING:
+
+        def nullsfirst(self) -> ColumnOperators:
+            ...
+
+    else:
+        nullsfirst = nulls_first
 
     def nulls_last(self) -> ColumnOperators:
         """Produce a :func:`_expression.nulls_last` clause against the
@@ -1540,7 +1745,13 @@ class ColumnOperators(Operators):
         return self.operate(nulls_last_op)
 
     # deprecated 1.4; see #5429
-    nullslast = nulls_last
+    if TYPE_CHECKING:
+
+        def nullslast(self) -> ColumnOperators:
+            ...
+
+    else:
+        nullslast = nulls_last
 
     def collate(self, collation: str) -> ColumnOperators:
         """Produce a :func:`_expression.collate` clause against
@@ -1613,8 +1824,6 @@ class ColumnOperators(Operators):
             :meth:`_types.ARRAY.Comparator.any` method, which a different
             calling syntax and usage pattern.
 
-        .. versionadded:: 1.1
-
         """
         return self.operate(any_op)
 
@@ -1629,9 +1838,6 @@ class ColumnOperators(Operators):
             :class:`_types.ARRAY`-specific counterpart, the
             :meth:`_types.ARRAY.Comparator.all` method, which a different
             calling syntax and usage pattern.
-
-
-        .. versionadded:: 1.1
 
         """
         return self.operate(all_op)
@@ -1759,7 +1965,14 @@ def is_true(a: Any) -> Any:
 
 
 # 1.4 deprecated; see #5435
-istrue = is_true
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def istrue(a: Any) -> Any:
+        ...
+
+else:
+    istrue = is_true
 
 
 @_operator_fn
@@ -1768,7 +1981,14 @@ def is_false(a: Any) -> Any:
 
 
 # 1.4 deprecated; see #5435
-isfalse = is_false
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def isfalse(a: Any) -> Any:
+        ...
+
+else:
+    isfalse = is_false
 
 
 @comparison_op
@@ -1784,7 +2004,14 @@ def is_not_distinct_from(a: Any, b: Any) -> Any:
 
 
 # deprecated 1.4; see #5435
-isnot_distinct_from = is_not_distinct_from
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def isnot_distinct_from(a: Any, b: Any) -> Any:
+        ...
+
+else:
+    isnot_distinct_from = is_not_distinct_from
 
 
 @comparison_op
@@ -1800,7 +2027,14 @@ def is_not(a: Any, b: Any) -> Any:
 
 
 # 1.4 deprecated; see #5429
-isnot = is_not
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def isnot(a: Any, b: Any) -> Any:
+        ...
+
+else:
+    isnot = is_not
 
 
 @_operator_fn
@@ -1826,7 +2060,14 @@ def not_like_op(a: Any, b: Any, escape: Optional[str] = None) -> Any:
 
 
 # 1.4 deprecated; see #5435
-notlike_op = not_like_op
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def notlike_op(a: Any, b: Any, escape: Optional[str] = None) -> Any:
+        ...
+
+else:
+    notlike_op = not_like_op
 
 
 @comparison_op
@@ -1842,7 +2083,14 @@ def not_ilike_op(a: Any, b: Any, escape: Optional[str] = None) -> Any:
 
 
 # 1.4 deprecated; see #5435
-notilike_op = not_ilike_op
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def notilike_op(a: Any, b: Any, escape: Optional[str] = None) -> Any:
+        ...
+
+else:
+    notilike_op = not_ilike_op
 
 
 @comparison_op
@@ -1858,7 +2106,14 @@ def not_between_op(a: Any, b: Any, c: Any, symmetric: bool = False) -> Any:
 
 
 # 1.4 deprecated; see #5435
-notbetween_op = not_between_op
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def notbetween_op(a: Any, b: Any, c: Any, symmetric: bool = False) -> Any:
+        ...
+
+else:
+    notbetween_op = not_between_op
 
 
 @comparison_op
@@ -1874,7 +2129,14 @@ def not_in_op(a: Any, b: Any) -> Any:
 
 
 # 1.4 deprecated; see #5429
-notin_op = not_in_op
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def notin_op(a: Any, b: Any) -> Any:
+        ...
+
+else:
+    notin_op = not_in_op
 
 
 @_operator_fn
@@ -1931,7 +2193,16 @@ def not_startswith_op(
 
 
 # 1.4 deprecated; see #5435
-notstartswith_op = not_startswith_op
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def notstartswith_op(
+        a: Any, b: Any, escape: Optional[str] = None, autoescape: bool = False
+    ) -> Any:
+        ...
+
+else:
+    notstartswith_op = not_startswith_op
 
 
 @comparison_op
@@ -1967,7 +2238,16 @@ def not_endswith_op(
 
 
 # 1.4 deprecated; see #5435
-notendswith_op = not_endswith_op
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def notendswith_op(
+        a: Any, b: Any, escape: Optional[str] = None, autoescape: bool = False
+    ) -> Any:
+        ...
+
+else:
+    notendswith_op = not_endswith_op
 
 
 @comparison_op
@@ -2003,7 +2283,16 @@ def not_contains_op(
 
 
 # 1.4 deprecated; see #5435
-notcontains_op = not_contains_op
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def notcontains_op(
+        a: Any, b: Any, escape: Optional[str] = None, autoescape: bool = False
+    ) -> Any:
+        ...
+
+else:
+    notcontains_op = not_contains_op
 
 
 @comparison_op
@@ -2054,7 +2343,14 @@ def not_match_op(a: Any, b: Any, **kw: Any) -> Any:
 
 
 # 1.4 deprecated; see #5429
-notmatch_op = not_match_op
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def notmatch_op(a: Any, b: Any, **kw: Any) -> Any:
+        ...
+
+else:
+    notmatch_op = not_match_op
 
 
 @_operator_fn
@@ -2093,7 +2389,14 @@ def nulls_first_op(a: Any) -> Any:
 
 
 # 1.4 deprecated; see #5435
-nullsfirst_op = nulls_first_op
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def nullsfirst_op(a: Any) -> Any:
+        ...
+
+else:
+    nullsfirst_op = nulls_first_op
 
 
 @_operator_fn
@@ -2102,7 +2405,14 @@ def nulls_last_op(a: Any) -> Any:
 
 
 # 1.4 deprecated; see #5435
-nullslast_op = nulls_last_op
+if TYPE_CHECKING:
+
+    @_operator_fn
+    def nullslast_op(a: Any) -> Any:
+        ...
+
+else:
+    nullslast_op = nulls_last_op
 
 
 @_operator_fn
@@ -2113,6 +2423,36 @@ def json_getitem_op(a: Any, b: Any) -> Any:
 @_operator_fn
 def json_path_getitem_op(a: Any, b: Any) -> Any:
     raise NotImplementedError()
+
+
+@_operator_fn
+def bitwise_xor_op(a: Any, b: Any) -> Any:
+    return a.bitwise_xor(b)
+
+
+@_operator_fn
+def bitwise_or_op(a: Any, b: Any) -> Any:
+    return a.bitwise_or(b)
+
+
+@_operator_fn
+def bitwise_and_op(a: Any, b: Any) -> Any:
+    return a.bitwise_and(b)
+
+
+@_operator_fn
+def bitwise_not_op(a: Any) -> Any:
+    return a.bitwise_not()
+
+
+@_operator_fn
+def bitwise_lshift_op(a: Any, b: Any) -> Any:
+    return a.bitwise_lshift(b)
+
+
+@_operator_fn
+def bitwise_rshift_op(a: Any, b: Any) -> Any:
+    return a.bitwise_rshift(b)
 
 
 def is_comparison(op: OperatorType) -> bool:
@@ -2193,10 +2533,16 @@ _PRECEDENCE: Dict[OperatorType, int] = {
     floordiv: 8,
     mod: 8,
     neg: 8,
+    bitwise_not_op: 8,
     add: 7,
     sub: 7,
-    concat_op: 6,
+    bitwise_xor_op: 7,
+    bitwise_or_op: 7,
+    bitwise_and_op: 7,
+    bitwise_lshift_op: 7,
+    bitwise_rshift_op: 7,
     filter_op: 6,
+    concat_op: 5,
     match_op: 5,
     not_match_op: 5,
     regexp_match_op: 5,

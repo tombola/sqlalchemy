@@ -10,26 +10,25 @@ a single Python interpreter::
 
     tox
 
-
 Advanced Tox Options
 ====================
 
 For more elaborate CI-style test running, the tox script provided will
 run against various Python / database targets.   For a basic run against
-Python 3.8 using an in-memory SQLite database::
+Python 3.11 using an in-memory SQLite database::
 
-    tox -e py38-sqlite
+    tox -e py311-sqlite
 
 The tox runner contains a series of target combinations that can run
 against various combinations of databases.  The test suite can be
 run against SQLite with "backend" tests also running against a PostgreSQL
 database::
 
-    tox -e py38-sqlite-postgresql
+    tox -e py311-sqlite-postgresql
 
 Or to run just "backend" tests against a MySQL database::
 
-    tox -e py38-mysql-backendonly
+    tox -e py311-mysql-backendonly
 
 Running against backends other than SQLite requires that a database of that
 vendor be available at a specific URL.  See "Setting Up Databases" below
@@ -138,7 +137,7 @@ with the tox runner also::
     [db]
     postgresql=postgresql+psycopg2://username:pass@hostname/dbname
 
-Now when we run ``tox -e py38-postgresql``, it will use our custom URL instead
+Now when we run ``tox -e py311-postgresql``, it will use our custom URL instead
 of the fixed one in setup.cfg.
 
 Database Configuration
@@ -192,11 +191,16 @@ Additional steps specific to individual databases are as follows::
 
         postgres=# create database test with owner=scott encoding='utf8' template=template0;
 
-    To include tests for HSTORE, create the HSTORE type engine::
+    To include tests for HSTORE and CITEXT for PostgreSQL versions lower than 13,
+    create the extensions; for PostgreSQL 13 and above, these
+    extensions are created automatically as part of the test suite if not
+    already present::
 
         postgres=# \c test;
         You are now connected to database "test" as user "postgresql".
         test=# create extension hstore;
+        CREATE EXTENSION
+        test=# create extension citext;
         CREATE EXTENSION
 
     Full-text search configuration should be set to English, else
@@ -250,7 +254,7 @@ intended for production use!
 
     # configure the database
     sleep 10
-    docker exec -ti postgres psql -U scott -c 'CREATE SCHEMA test_schema; CREATE SCHEMA test_schema_2;CREATE EXTENSION hstore;' test
+    docker exec -ti postgres psql -U scott -c 'CREATE SCHEMA test_schema; CREATE SCHEMA test_schema_2;CREATE EXTENSION hstore;CREATE EXTENSION citext;' test
     # this last command is optional
     docker exec -ti postgres sed -i 's/#max_prepared_transactions = 0/max_prepared_transactions = 10/g' /var/lib/postgresql/data/postgresql.conf
 

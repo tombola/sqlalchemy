@@ -33,6 +33,7 @@ from sqlalchemy.sql import util as sql_util
 from sqlalchemy.sql import visitors
 from sqlalchemy.sql.elements import _clone
 from sqlalchemy.sql.expression import _from_objects
+from sqlalchemy.sql.util import _deep_annotate
 from sqlalchemy.sql.visitors import ClauseVisitor
 from sqlalchemy.sql.visitors import cloned_traverse
 from sqlalchemy.sql.visitors import CloningVisitor
@@ -507,6 +508,71 @@ class ClauseTest(fixtures.TestBase, AssertsCompiledSQL):
         adapted = sql_util.ClauseAdapter(a1).traverse(expr)
 
         self.assert_compile(adapted, expected)
+
+    @testing.variation("annotate", [True, False])
+    def test_bindparam_render_literal_execute(self, annotate):
+        """test #9526"""
+
+        bp = bindparam("some_value")
+
+        if annotate:
+            bp = bp._annotate({"foo": "bar"})
+
+        bp = bp.render_literal_execute()
+        self.assert_compile(
+            column("q") == bp, "q = __[POSTCOMPILE_some_value]"
+        )
+
+    @testing.variation("limit_type", ["limit", "fetch"])
+    @testing.variation("dialect", ["default", "oracle"])
+    def test_annotated_fetch(self, limit_type: testing.Variation, dialect):
+        """test #9526"""
+
+        if limit_type.limit:
+            stmt = select(column("q")).limit(1)
+        elif limit_type.fetch:
+            stmt = select(column("q")).fetch(1)
+        else:
+            limit_type.fail()
+
+        stmt = _deep_annotate(stmt, {"foo": "bar"})
+
+        if limit_type.limit:
+            if dialect.default:
+                self.assert_compile(
+                    stmt,
+                    "SELECT q LIMIT :param_1",
+                    use_literal_execute_for_simple_int=True,
+                    dialect=dialect.name,
+                )
+            elif dialect.oracle:
+                self.assert_compile(
+                    stmt,
+                    "SELECT q FROM DUAL FETCH FIRST "
+                    "__[POSTCOMPILE_param_1] ROWS ONLY",
+                    dialect=dialect.name,
+                )
+            else:
+                dialect.fail()
+        elif limit_type.fetch:
+            if dialect.default:
+                self.assert_compile(
+                    stmt,
+                    "SELECT q FETCH FIRST __[POSTCOMPILE_param_1] ROWS ONLY",
+                    use_literal_execute_for_simple_int=True,
+                    dialect=dialect.name,
+                )
+            elif dialect.oracle:
+                self.assert_compile(
+                    stmt,
+                    "SELECT q FROM DUAL FETCH FIRST "
+                    "__[POSTCOMPILE_param_1] ROWS ONLY",
+                    dialect=dialect.name,
+                )
+            else:
+                dialect.fail()
+        else:
+            limit_type.fail()
 
     @testing.combinations((null(),), (true(),))
     def test_dont_adapt_singleton_elements(self, elem):
@@ -1194,7 +1260,6 @@ class ClauseTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
     def test_this_thing_using_setup_joins_three(self):
-
         j = t1.join(t2, t1.c.col1 == t2.c.col2)
 
         s1 = select(j)
@@ -1239,7 +1304,6 @@ class ClauseTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
     def test_this_thing_using_setup_joins_four(self):
-
         j = t1.join(t2, t1.c.col1 == t2.c.col2)
 
         s1 = select(j)
@@ -1606,6 +1670,36 @@ class ColumnAdapterTest(fixtures.TestBase, AssertsCompiledSQL):
         # not covered by a1, rejected by a2
         is_(a3.columns[c2a1], c2a1)
 
+    @testing.combinations(True, False, argnames="colpresent")
+    @testing.combinations(True, False, argnames="adapt_on_names")
+    @testing.combinations(True, False, argnames="use_label")
+    def test_adapt_binary_col(self, colpresent, use_label, adapt_on_names):
+        """test #9273"""
+
+        if use_label:
+            stmt = select(t1.c.col1, (t1.c.col2 > 18).label("foo"))
+        else:
+            stmt = select(t1.c.col1, (t1.c.col2 > 18))
+
+        sq = stmt.subquery()
+
+        if colpresent:
+            s2 = select(sq.c[0], sq.c[1])
+        else:
+            s2 = select(sq.c[0])
+
+        a1 = sql_util.ColumnAdapter(s2, adapt_on_names=adapt_on_names)
+
+        is_(a1.columns[stmt.selected_columns[0]], s2.selected_columns[0])
+
+        if colpresent:
+            is_(a1.columns[stmt.selected_columns[1]], s2.selected_columns[1])
+        else:
+            is_(
+                a1.columns[stmt.selected_columns[1]],
+                a1.columns[stmt.selected_columns[1]],
+            )
+
 
 class ClauseAdapterTest(fixtures.TestBase, AssertsCompiledSQL):
     __dialect__ = "default"
@@ -1735,7 +1829,6 @@ class ClauseAdapterTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
     def test_adapt_select_w_unlabeled_fn(self):
-
         expr = func.count(t1.c.col1)
         stmt = select(t1, expr)
 
@@ -2335,7 +2428,6 @@ class ClauseAdapterTest(fixtures.TestBase, AssertsCompiledSQL):
         assert s2.is_derived_from(s1)
 
     def test_aliasedselect_to_aliasedselect_straight(self):
-
         # original issue from ticket #904
 
         s1 = select(t1).alias("foo")

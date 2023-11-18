@@ -16,7 +16,6 @@ from __future__ import annotations
 import collections
 from enum import Enum
 import itertools
-import typing
 from typing import AbstractSet
 from typing import Any as TODO_Any
 from typing import Any
@@ -64,6 +63,7 @@ from .base import _EntityNamespace
 from .base import _expand_cloned
 from .base import _from_objects
 from .base import _generative
+from .base import _never_select_column
 from .base import _NoArg
 from .base import _select_iterables
 from .base import CacheableOptions
@@ -90,6 +90,7 @@ from .elements import literal_column
 from .elements import TableValuedColumn
 from .elements import UnaryExpression
 from .operators import OperatorType
+from .sqltypes import NULLTYPE
 from .visitors import _TraverseInternalsType
 from .visitors import InternalTraversal
 from .visitors import prefix_anon_map
@@ -109,6 +110,7 @@ if TYPE_CHECKING:
     from ._typing import _ColumnExpressionOrStrLabelArgument
     from ._typing import _FromClauseArgument
     from ._typing import _JoinTargetArgument
+    from ._typing import _LimitOffsetType
     from ._typing import _MAYBE_ENTITY
     from ._typing import _NOT_ENTITY
     from ._typing import _OnClauseArgument
@@ -162,6 +164,16 @@ class _JoinTargetProtocol(Protocol):
 
 _JoinTargetElement = Union["FromClause", _JoinTargetProtocol]
 _OnClauseElement = Union["ColumnElement[bool]", _JoinTargetProtocol]
+
+_ForUpdateOfArgument = Union[
+    # single column, Table, ORM Entity
+    Union[
+        "_ColumnExpressionArgument[Any]",
+        "_FromClauseArgument",
+    ],
+    # or sequence of single column elements
+    Sequence["_ColumnExpressionArgument[Any]"],
+]
 
 
 _SetupJoinsElement = Tuple[
@@ -275,9 +287,6 @@ class TypedReturnsRows(ExecutableReturnsRows, Generic[_TP]):
     """base for executable statements that return rows."""
 
 
-SelfSelectable = TypeVar("SelfSelectable", bound="Selectable")
-
-
 class Selectable(ReturnsRows):
     """Mark a class as being selectable."""
 
@@ -294,8 +303,6 @@ class Selectable(ReturnsRows):
         The return value is the :class:`_expression.Lateral` construct also
         provided by the top-level :func:`_expression.lateral` function.
 
-        .. versionadded:: 1.1
-
         .. seealso::
 
             :ref:`tutorial_lateral_correlation` -  overview of usage.
@@ -310,17 +317,13 @@ class Selectable(ReturnsRows):
         "functionality is available via the sqlalchemy.sql.visitors module.",
     )
     @util.preload_module("sqlalchemy.sql.util")
-    def replace_selectable(
-        self: SelfSelectable, old: FromClause, alias: Alias
-    ) -> SelfSelectable:
+    def replace_selectable(self, old: FromClause, alias: Alias) -> Self:
         """Replace all occurrences of :class:`_expression.FromClause`
         'old' with the given :class:`_expression.Alias`
         object, returning a copy of this :class:`_expression.FromClause`.
 
         """
-        return util.preloaded.sql_util.ClauseAdapter(alias).traverse(  # type: ignore  # noqa: E501
-            self
-        )
+        return util.preloaded.sql_util.ClauseAdapter(alias).traverse(self)
 
     def corresponding_column(
         self, column: KeyedColumnElement[Any], require_embedded: bool = False
@@ -362,9 +365,6 @@ class Selectable(ReturnsRows):
         )
 
 
-SelfHasPrefixes = typing.TypeVar("SelfHasPrefixes", bound="HasPrefixes")
-
-
 class HasPrefixes:
     _prefixes: Tuple[Tuple[DQLDMLClauseElement, str], ...] = ()
 
@@ -379,10 +379,10 @@ class HasPrefixes:
         ":paramref:`.HasPrefixes.prefix_with.*prefixes`",
     )
     def prefix_with(
-        self: SelfHasPrefixes,
+        self,
         *prefixes: _TextCoercedExpressionArgument[Any],
         dialect: str = "*",
-    ) -> SelfHasPrefixes:
+    ) -> Self:
         r"""Add one or more expressions following the statement keyword, i.e.
         SELECT, INSERT, UPDATE, or DELETE. Generative.
 
@@ -417,9 +417,6 @@ class HasPrefixes:
         return self
 
 
-SelfHasSuffixes = typing.TypeVar("SelfHasSuffixes", bound="HasSuffixes")
-
-
 class HasSuffixes:
     _suffixes: Tuple[Tuple[DQLDMLClauseElement, str], ...] = ()
 
@@ -434,10 +431,10 @@ class HasSuffixes:
         ":paramref:`.HasSuffixes.suffix_with.*suffixes`",
     )
     def suffix_with(
-        self: SelfHasSuffixes,
+        self,
         *suffixes: _TextCoercedExpressionArgument[Any],
         dialect: str = "*",
-    ) -> SelfHasSuffixes:
+    ) -> Self:
         r"""Add one or more expressions following the statement as a whole.
 
         This is used to support backend-specific suffix keywords on
@@ -467,9 +464,6 @@ class HasSuffixes:
         return self
 
 
-SelfHasHints = typing.TypeVar("SelfHasHints", bound="HasHints")
-
-
 class HasHints:
     _hints: util.immutabledict[
         Tuple[FromClause, str], str
@@ -481,9 +475,7 @@ class HasHints:
         ("_hints", InternalTraversal.dp_table_hint_list),
     ]
 
-    def with_statement_hint(
-        self: SelfHasHints, text: str, dialect_name: str = "*"
-    ) -> SelfHasHints:
+    def with_statement_hint(self, text: str, dialect_name: str = "*") -> Self:
         """Add a statement hint to this :class:`_expression.Select` or
         other selectable object.
 
@@ -495,8 +487,6 @@ class HasHints:
         Hints here are specific to the backend database and may include
         directives such as isolation levels, file directives, fetch directives,
         etc.
-
-        .. versionadded:: 1.0.0
 
         .. seealso::
 
@@ -511,11 +501,11 @@ class HasHints:
 
     @_generative
     def with_hint(
-        self: SelfHasHints,
+        self,
         selectable: _FromClauseArgument,
         text: str,
         dialect_name: str = "*",
-    ) -> SelfHasHints:
+    ) -> Self:
         r"""Add an indexing or other executional context hint for the given
         selectable to this :class:`_expression.Select` or other selectable
         object.
@@ -554,11 +544,11 @@ class HasHints:
         return self._with_hint(selectable, text, dialect_name)
 
     def _with_hint(
-        self: SelfHasHints,
+        self,
         selectable: Optional[_FromClauseArgument],
         text: str,
         dialect_name: str,
-    ) -> SelfHasHints:
+    ) -> Self:
         if selectable is None:
             self._statement_hints += ((dialect_name, text),)
         else:
@@ -571,9 +561,6 @@ class HasHints:
                 }
             )
         return self
-
-
-SelfFromClause = TypeVar("SelfFromClause", bound="FromClause")
 
 
 class FromClause(roles.AnonymizedFromClauseRole, Selectable):
@@ -679,8 +666,6 @@ class FromClause(roles.AnonymizedFromClauseRole, Selectable):
         :param full: if True, render a FULL OUTER JOIN, instead of LEFT OUTER
          JOIN.  Implies :paramref:`.FromClause.join.isouter`.
 
-         .. versionadded:: 1.1
-
         .. seealso::
 
             :func:`_expression.join` - standalone function
@@ -730,8 +715,6 @@ class FromClause(roles.AnonymizedFromClauseRole, Selectable):
         :param full: if True, render a FULL OUTER JOIN, instead of
          LEFT OUTER JOIN.
 
-         .. versionadded:: 1.1
-
         .. seealso::
 
             :meth:`_expression.FromClause.join`
@@ -776,8 +759,6 @@ class FromClause(roles.AnonymizedFromClauseRole, Selectable):
         The return value is the :class:`_expression.TableSample`
         construct also
         provided by the top-level :func:`_expression.tablesample` function.
-
-        .. versionadded:: 1.1
 
         .. seealso::
 
@@ -948,7 +929,7 @@ class FromClause(roles.AnonymizedFromClauseRole, Selectable):
 
     @util.ro_non_memoized_property
     def _select_iterable(self) -> _SelectIterable:
-        return self.c
+        return (c for c in self.c if not _never_select_column(c))
 
     def _init_collections(self) -> None:
         assert "_columns" not in self.__dict__
@@ -1006,7 +987,7 @@ class FromClause(roles.AnonymizedFromClauseRole, Selectable):
     if TYPE_CHECKING:
 
         def self_group(
-            self: Self, against: Optional[OperatorType] = None
+            self, against: Optional[OperatorType] = None
         ) -> Union[FromGrouping, Self]:
             ...
 
@@ -1437,7 +1418,7 @@ class Join(roles.DMLTableRole, FromClause):
                 continue
             for fk in sorted(
                 b.foreign_keys,
-                key=lambda fk: fk.parent._creation_order,  # type: ignore
+                key=lambda fk: fk.parent._creation_order,
             ):
                 if (
                     consider_as_foreign_keys is not None
@@ -1458,7 +1439,7 @@ class Join(roles.DMLTableRole, FromClause):
             if left is not b:
                 for fk in sorted(
                     left.foreign_keys,
-                    key=lambda fk: fk.parent._creation_order,  # type: ignore
+                    key=lambda fk: fk.parent._creation_order,
                 ):
                     if (
                         consider_as_foreign_keys is not None
@@ -1594,10 +1575,6 @@ class LateralFromClause(NamedFromClause):
     """mark a FROM clause as being able to render directly as LATERAL"""
 
 
-_SelfAliasedReturnsRows = TypeVar(
-    "_SelfAliasedReturnsRows", bound="AliasedReturnsRows"
-)
-
 # FromClause ->
 #   AliasedReturnsRows
 #        -> Alias   only for FromClause
@@ -1625,12 +1602,12 @@ class AliasedReturnsRows(NoInit, NamedFromClause):
 
     @classmethod
     def _construct(
-        cls: Type[_SelfAliasedReturnsRows],
+        cls,
         selectable: Any,
         *,
         name: Optional[str] = None,
         **kw: Any,
-    ) -> _SelfAliasedReturnsRows:
+    ) -> Self:
         obj = cls.__new__(cls)
         obj._init(selectable, name=name, **kw)
         return obj
@@ -1934,8 +1911,6 @@ class Lateral(FromClauseAlias, LateralFromClause):
     While LATERAL is part of the SQL standard, currently only more recent
     PostgreSQL versions provide support for this keyword.
 
-    .. versionadded:: 1.1
-
     .. seealso::
 
         :ref:`tutorial_lateral_correlation` -  overview of usage.
@@ -1965,8 +1940,6 @@ class TableSample(FromClauseAlias):
     level function as well as the :meth:`_expression.FromClause.tablesample`
     method
     available on all :class:`_expression.FromClause` subclasses.
-
-    .. versionadded:: 1.1
 
     .. seealso::
 
@@ -2198,9 +2171,6 @@ class CTE(
         return self._restates if self._restates is not None else self
 
 
-SelfHasCTE = typing.TypeVar("SelfHasCTE", bound="HasCTE")
-
-
 class _CTEOpts(NamedTuple):
     nesting: bool
 
@@ -2346,7 +2316,6 @@ class SelectsRows(ReturnsRows):
                     # c, use hash(), so that an annotated version of the column
                     # is seen as the same as the non-annotated
                     if hash(names[effective_name]) != hash(c):
-
                         # different column under the same name.  apply
                         # disambiguating label
                         if table_qualified:
@@ -2414,11 +2383,7 @@ class SelectsRows(ReturnsRows):
 
 
 class HasCTE(roles.HasCTERole, SelectsRows):
-    """Mixin that declares a class to include CTE support.
-
-    .. versionadded:: 1.1
-
-    """
+    """Mixin that declares a class to include CTE support."""
 
     _has_ctes_traverse_internals: _TraverseInternalsType = [
         ("_independent_ctes", InternalTraversal.dp_clauseelement_list),
@@ -2429,9 +2394,7 @@ class HasCTE(roles.HasCTERole, SelectsRows):
     _independent_ctes_opts: Tuple[_CTEOpts, ...] = ()
 
     @_generative
-    def add_cte(
-        self: SelfHasCTE, *ctes: CTE, nest_here: bool = False
-    ) -> SelfHasCTE:
+    def add_cte(self, *ctes: CTE, nest_here: bool = False) -> Self:
         r"""Add one or more :class:`_sql.CTE` constructs to this statement.
 
         This method will associate the given :class:`_sql.CTE` constructs with
@@ -2471,7 +2434,7 @@ class HasCTE(roles.HasCTERole, SelectsRows):
             SELECT t.c1, t.c2
             FROM t
 
-        Above, the "anon_1" CTE is not referred towards in the SELECT
+        Above, the "anon_1" CTE is not referenced in the SELECT
         statement, however still accomplishes the task of running an INSERT
         statement.
 
@@ -2555,9 +2518,6 @@ class HasCTE(roles.HasCTERole, SelectsRows):
         and DELETE on some databases, both as a source of CTE rows
         when combined with RETURNING, as well as a consumer of
         CTE rows.
-
-        .. versionchanged:: 1.1 Added support for UPDATE/INSERT/DELETE as
-           CTE, CTEs added to UPDATE/INSERT/DELETE.
 
         SQLAlchemy detects :class:`_expression.CTE` objects, which are treated
         similarly to :class:`_expression.Alias` objects, as special elements
@@ -3104,6 +3064,9 @@ class TableClause(roles.DMLTableRole, Immutable, NamedFromClause):
         return [self]
 
 
+ForUpdateParameter = Union["ForUpdateArg", None, bool, Dict[str, Any]]
+
+
 class ForUpdateArg(ClauseElement):
     _traverse_internals: _TraverseInternalsType = [
         ("of", InternalTraversal.dp_clauseelement_list),
@@ -3119,7 +3082,7 @@ class ForUpdateArg(ClauseElement):
 
     @classmethod
     def _from_argument(
-        cls, with_for_update: Union[ForUpdateArg, None, bool, Dict[str, Any]]
+        cls, with_for_update: ForUpdateParameter
     ) -> Optional[ForUpdateArg]:
         if isinstance(with_for_update, ForUpdateArg):
             return with_for_update
@@ -3151,12 +3114,7 @@ class ForUpdateArg(ClauseElement):
         *,
         nowait: bool = False,
         read: bool = False,
-        of: Optional[
-            Union[
-                _ColumnExpressionArgument[Any],
-                Sequence[_ColumnExpressionArgument[Any]],
-            ]
-        ] = None,
+        of: Optional[_ForUpdateOfArgument] = None,
         skip_locked: bool = False,
         key_share: bool = False,
     ):
@@ -3178,9 +3136,6 @@ class ForUpdateArg(ClauseElement):
             self.of = None
 
 
-SelfValues = typing.TypeVar("SelfValues", bound="Values")
-
-
 class Values(roles.InElementRole, Generative, LateralFromClause):
     """Represent a ``VALUES`` construct that can be used as a FROM element
     in a statement.
@@ -3194,7 +3149,7 @@ class Values(roles.InElementRole, Generative, LateralFromClause):
 
     __visit_name__ = "values"
 
-    _data: Tuple[List[Tuple[Any, ...]], ...] = ()
+    _data: Tuple[Sequence[Tuple[Any, ...]], ...] = ()
 
     _unnamed: bool
     _traverse_internals: _TraverseInternalsType = [
@@ -3212,6 +3167,7 @@ class Values(roles.InElementRole, Generative, LateralFromClause):
     ):
         super().__init__()
         self._column_args = columns
+
         if name is None:
             self._unnamed = True
             self.name = _anonymous_label.safe_construct(id(self), "anon")
@@ -3226,10 +3182,7 @@ class Values(roles.InElementRole, Generative, LateralFromClause):
         return [col.type for col in self._column_args]
 
     @_generative
-    def alias(
-        self: SelfValues, name: Optional[str] = None, flat: bool = False
-    ) -> SelfValues:
-
+    def alias(self, name: Optional[str] = None, flat: bool = False) -> Self:
         """Return a new :class:`_expression.Values`
         construct that is a copy of this
         one with the given name.
@@ -3280,7 +3233,7 @@ class Values(roles.InElementRole, Generative, LateralFromClause):
         return self
 
     @_generative
-    def data(self: SelfValues, values: List[Tuple[Any, ...]]) -> SelfValues:
+    def data(self, values: Sequence[Tuple[Any, ...]]) -> Self:
         """Return a new :class:`_expression.Values` construct,
         adding the given data to the data list.
 
@@ -3308,6 +3261,13 @@ class Values(roles.InElementRole, Generative, LateralFromClause):
 
     def _populate_column_collection(self) -> None:
         for c in self._column_args:
+            if c.table is not None and c.table is not self:
+                _, c = c._make_proxy(self)
+            else:
+                # if the column was used in other contexts, ensure
+                # no memoizations of other FROM clauses.
+                # see test_values.py -> test_auto_proxy_select_direct_col
+                c._reset_memoizations()
             self._columns.add(c)
             c.table = self
 
@@ -3340,7 +3300,7 @@ class ScalarValues(roles.InElementRole, GroupedElement, ColumnElement[Any]):
     def __init__(
         self,
         columns: Sequence[ColumnClause[Any]],
-        data: Tuple[List[Tuple[Any, ...]], ...],
+        data: Tuple[Sequence[Tuple[Any, ...]], ...],
         literal_binds: bool,
     ):
         super().__init__()
@@ -3354,9 +3314,6 @@ class ScalarValues(roles.InElementRole, GroupedElement, ColumnElement[Any]):
 
     def __clause_element__(self) -> ScalarValues:
         return self
-
-
-SelfSelectBase = TypeVar("SelfSelectBase", bound=Any)
 
 
 class SelectBase(
@@ -3502,9 +3459,7 @@ class SelectBase(
         """
         raise NotImplementedError()
 
-    def set_label_style(
-        self: SelfSelectBase, style: SelectLabelStyle
-    ) -> SelfSelectBase:
+    def set_label_style(self, style: SelectLabelStyle) -> Self:
         """Return a new selectable with the specified label style.
 
         Implemented by subclasses.
@@ -3594,7 +3549,7 @@ class SelectBase(
 
         .. seealso::
 
-            :meth:`_expression.SelectBase.as_scalar`.
+            :meth:`_expression.SelectBase.scalar_subquery`.
 
         """
         return self.scalar_subquery().label(name)
@@ -3604,8 +3559,6 @@ class SelectBase(
 
         The return value is the :class:`_expression.Lateral` construct also
         provided by the top-level :func:`_expression.lateral` function.
-
-        .. versionadded:: 1.1
 
         .. seealso::
 
@@ -3658,7 +3611,7 @@ class SelectBase(
             self._ensure_disambiguated_names(), name=name
         )
 
-    def _ensure_disambiguated_names(self: SelfSelectBase) -> SelfSelectBase:
+    def _ensure_disambiguated_names(self) -> Self:
         """Ensure that the names generated by this selectbase will be
         disambiguated in some way, if possible.
 
@@ -3733,7 +3686,7 @@ class SelectStatementGrouping(GroupedElement, SelectBase, Generic[_SB]):
     def select_statement(self) -> _SB:
         return self.element
 
-    def self_group(self: Self, against: Optional[OperatorType] = None) -> Self:
+    def self_group(self, against: Optional[OperatorType] = None) -> Self:
         ...
         return self
 
@@ -3784,11 +3737,6 @@ class SelectStatementGrouping(GroupedElement, SelectBase, Generic[_SB]):
         return self.element._from_objects
 
 
-SelfGenerativeSelect = typing.TypeVar(
-    "SelfGenerativeSelect", bound="GenerativeSelect"
-)
-
-
 class GenerativeSelect(SelectBase, Generative):
     """Base class for SELECT statements where additional elements can be
     added.
@@ -3818,19 +3766,14 @@ class GenerativeSelect(SelectBase, Generative):
 
     @_generative
     def with_for_update(
-        self: SelfGenerativeSelect,
+        self,
         *,
         nowait: bool = False,
         read: bool = False,
-        of: Optional[
-            Union[
-                _ColumnExpressionArgument[Any],
-                Sequence[_ColumnExpressionArgument[Any]],
-            ]
-        ] = None,
+        of: Optional[_ForUpdateOfArgument] = None,
         skip_locked: bool = False,
         key_share: bool = False,
-    ) -> SelfGenerativeSelect:
+    ) -> Self:
         """Specify a ``FOR UPDATE`` clause for this
         :class:`_expression.GenerativeSelect`.
 
@@ -3860,12 +3803,12 @@ class GenerativeSelect(SelectBase, Generative):
          ``FOR SHARE`` on PostgreSQL.  On PostgreSQL, when combined with
          ``nowait``, will render ``FOR SHARE NOWAIT``.
 
-        :param of: SQL expression or list of SQL expression elements
-         (typically :class:`_schema.Column`
-         objects or a compatible expression) which
-         will render into a ``FOR UPDATE OF`` clause; supported by PostgreSQL
-         and Oracle.  May render as a table or as a column depending on
-         backend.
+        :param of: SQL expression or list of SQL expression elements,
+         (typically :class:`_schema.Column` objects or a compatible expression,
+         for some backends may also be a table expression) which will render
+         into a ``FOR UPDATE OF`` clause; supported by PostgreSQL, Oracle, some
+         MySQL versions and possibly others. May render as a table or as a
+         column depending on backend.
 
         :param skip_locked: boolean, will render ``FOR UPDATE SKIP LOCKED``
          on Oracle and PostgreSQL dialects or ``FOR SHARE SKIP LOCKED`` if
@@ -3894,9 +3837,7 @@ class GenerativeSelect(SelectBase, Generative):
         """
         return self._label_style
 
-    def set_label_style(
-        self: SelfGenerativeSelect, style: SelectLabelStyle
-    ) -> SelfGenerativeSelect:
+    def set_label_style(self, style: SelectLabelStyle) -> Self:
         """Return a new selectable with the specified label style.
 
         There are three "label styles" available,
@@ -3955,7 +3896,7 @@ class GenerativeSelect(SelectBase, Generative):
 
     def _offset_or_limit_clause(
         self,
-        element: Union[int, _ColumnExpressionArgument[Any]],
+        element: _LimitOffsetType,
         name: Optional[str] = None,
         type_: Optional[_TypeEngineArgument[int]] = None,
     ) -> ColumnElement[Any]:
@@ -4040,10 +3981,7 @@ class GenerativeSelect(SelectBase, Generative):
         )
 
     @_generative
-    def limit(
-        self: SelfGenerativeSelect,
-        limit: Union[int, _ColumnExpressionArgument[int]],
-    ) -> SelfGenerativeSelect:
+    def limit(self, limit: _LimitOffsetType) -> Self:
         """Return a new selectable with the given LIMIT criterion
         applied.
 
@@ -4056,9 +3994,6 @@ class GenerativeSelect(SelectBase, Generative):
 
            The :meth:`_sql.GenerativeSelect.limit` method will replace
            any clause applied with :meth:`_sql.GenerativeSelect.fetch`.
-
-        .. versionchanged:: 1.0.0 - :meth:`_expression.Select.limit` can now
-           accept arbitrary SQL expressions as well as integer values.
 
         :param limit: an integer LIMIT parameter, or a SQL expression
          that provides an integer result. Pass ``None`` to reset it.
@@ -4077,11 +4012,11 @@ class GenerativeSelect(SelectBase, Generative):
 
     @_generative
     def fetch(
-        self: SelfGenerativeSelect,
-        count: Union[int, _ColumnExpressionArgument[int]],
+        self,
+        count: _LimitOffsetType,
         with_ties: bool = False,
         percent: bool = False,
-    ) -> SelfGenerativeSelect:
+    ) -> Self:
         """Return a new selectable with the given FETCH FIRST criterion
         applied.
 
@@ -4132,10 +4067,7 @@ class GenerativeSelect(SelectBase, Generative):
         return self
 
     @_generative
-    def offset(
-        self: SelfGenerativeSelect,
-        offset: Union[int, _ColumnExpressionArgument[int]],
-    ) -> SelfGenerativeSelect:
+    def offset(self, offset: _LimitOffsetType) -> Self:
         """Return a new selectable with the given OFFSET criterion
         applied.
 
@@ -4144,10 +4076,6 @@ class GenerativeSelect(SelectBase, Generative):
         expression in the resulting select.  Backends that don't
         support ``OFFSET`` will attempt to provide similar
         functionality.
-
-
-        .. versionchanged:: 1.0.0 - :meth:`_expression.Select.offset` can now
-           accept arbitrary SQL expressions as well as integer values.
 
         :param offset: an integer OFFSET parameter, or a SQL expression
          that provides an integer result. Pass ``None`` to reset it.
@@ -4166,10 +4094,10 @@ class GenerativeSelect(SelectBase, Generative):
     @_generative
     @util.preload_module("sqlalchemy.sql.util")
     def slice(
-        self: SelfGenerativeSelect,
+        self,
         start: int,
         stop: int,
-    ) -> SelfGenerativeSelect:
+    ) -> Self:
         """Apply LIMIT / OFFSET to this statement based on a slice.
 
         The start and stop indices behave like the argument to Python's
@@ -4217,13 +4145,14 @@ class GenerativeSelect(SelectBase, Generative):
 
     @_generative
     def order_by(
-        self: SelfGenerativeSelect,
+        self,
         __first: Union[
             Literal[None, _NoArg.NO_ARG],
             _ColumnExpressionOrStrLabelArgument[Any],
         ] = _NoArg.NO_ARG,
+        /,
         *clauses: _ColumnExpressionOrStrLabelArgument[Any],
-    ) -> SelfGenerativeSelect:
+    ) -> Self:
         r"""Return a new selectable with the given list of ORDER BY
         criteria applied.
 
@@ -4255,20 +4184,23 @@ class GenerativeSelect(SelectBase, Generative):
             self._order_by_clauses = ()
         elif __first is not _NoArg.NO_ARG:
             self._order_by_clauses += tuple(
-                coercions.expect(roles.OrderByRole, clause)
+                coercions.expect(
+                    roles.OrderByRole, clause, apply_propagate_attrs=self
+                )
                 for clause in (__first,) + clauses
             )
         return self
 
     @_generative
     def group_by(
-        self: SelfGenerativeSelect,
+        self,
         __first: Union[
             Literal[None, _NoArg.NO_ARG],
             _ColumnExpressionOrStrLabelArgument[Any],
         ] = _NoArg.NO_ARG,
+        /,
         *clauses: _ColumnExpressionOrStrLabelArgument[Any],
-    ) -> SelfGenerativeSelect:
+    ) -> Self:
         r"""Return a new selectable with the given list of GROUP BY
         criterion applied.
 
@@ -4296,7 +4228,9 @@ class GenerativeSelect(SelectBase, Generative):
             self._group_by_clauses = ()
         elif __first is not _NoArg.NO_ARG:
             self._group_by_clauses += tuple(
-                coercions.expect(roles.GroupByRole, clause)
+                coercions.expect(
+                    roles.GroupByRole, clause, apply_propagate_attrs=self
+                )
                 for clause in (__first,) + clauses
             )
         return self
@@ -4375,9 +4309,9 @@ class CompoundSelect(HasCompileState, GenerativeSelect, ExecutableReturnsRows):
     ):
         self.keyword = keyword
         self.selects = [
-            coercions.expect(roles.CompoundElementRole, s).self_group(
-                against=self
-            )
+            coercions.expect(
+                roles.CompoundElementRole, s, apply_propagate_attrs=self
+            ).self_group(against=self)
             for s in selects
         ]
 
@@ -4457,7 +4391,6 @@ class CompoundSelect(HasCompileState, GenerativeSelect, ExecutableReturnsRows):
             Iterable[Sequence[ColumnElement[Any]]]
         ] = None,
     ) -> None:
-
         # this is a slightly hacky thing - the union exports a
         # column that resembles just that of the *first* selectable.
         # to get at a "composite" column, particularly foreign keys,
@@ -4602,7 +4535,7 @@ class SelectState(util.MemoizedSlots, CompileState):
 
     @classmethod
     def from_statement(
-        cls, statement: Select[Any], from_statement: ExecutableReturnsRows
+        cls, statement: Select[Any], from_statement: roles.ReturnsRowsRole
     ) -> ExecutableReturnsRows:
         cls._plugin_not_implemented()
 
@@ -4620,7 +4553,6 @@ class SelectState(util.MemoizedSlots, CompileState):
     def _column_naming_convention(
         cls, label_style: SelectLabelStyle
     ) -> _LabelConventionCallable:
-
         table_qualified = label_style is LABEL_STYLE_TABLENAME_PLUS_COL
         dedupe = label_style is not LABEL_STYLE_NONE
 
@@ -4707,7 +4639,6 @@ class SelectState(util.MemoizedSlots, CompileState):
         froms: List[FromClause] = []
 
         for item in iterable_of_froms:
-
             if is_subquery(item) and item.element is check_statement:
                 raise exc.InvalidRequestError(
                     "select() construct refers to itself as a FROM"
@@ -4777,7 +4708,6 @@ class SelectState(util.MemoizedSlots, CompileState):
                 ]
 
         if self.statement._correlate_except is not None:
-
             froms = [
                 f
                 for f in froms
@@ -4795,7 +4725,6 @@ class SelectState(util.MemoizedSlots, CompileState):
             and implicit_correlate_froms
             and len(froms) > 1
         ):
-
             froms = [
                 f
                 for f in froms
@@ -4823,7 +4752,7 @@ class SelectState(util.MemoizedSlots, CompileState):
         Dict[str, ColumnElement[Any]],
     ]:
         with_cols: Dict[str, ColumnElement[Any]] = {
-            c._tq_label or c.key: c  # type: ignore
+            c._tq_label or c.key: c
             for c in self.statement._all_selected_columns
             if c._allow_label_resolve
         }
@@ -4856,7 +4785,7 @@ class SelectState(util.MemoizedSlots, CompileState):
         args: Tuple[_SetupJoinsElement, ...],
         raw_columns: List[_ColumnsClauseElement],
     ) -> None:
-        for (right, onclause, left, flags) in args:
+        for right, onclause, left, flags in args:
             if TYPE_CHECKING:
                 if onclause is not None:
                     assert isinstance(onclause, ColumnElement)
@@ -4931,7 +4860,6 @@ class SelectState(util.MemoizedSlots, CompileState):
         from_clauses = self.from_clauses
 
         if from_clauses:
-
             indexes: List[int] = sql_util.find_left_clause_to_join_from(
                 from_clauses, right, onclause
             )
@@ -4954,7 +4882,6 @@ class SelectState(util.MemoizedSlots, CompileState):
                     ]
                 ),
             ):
-
                 potential[from_clause] = ()
 
             all_clauses = list(potential.keys())
@@ -5050,9 +4977,6 @@ class _SelectFromElements:
             yield element
 
 
-Self_MemoizedSelectEntities = TypeVar("Self_MemoizedSelectEntities", bound=Any)
-
-
 class _MemoizedSelectEntities(
     cache_key.HasCacheKey, traversals.HasCopyInternals, visitors.Traversible
 ):
@@ -5091,14 +5015,12 @@ class _MemoizedSelectEntities(
 
     _annotations = util.EMPTY_DICT
 
-    def _clone(
-        self: Self_MemoizedSelectEntities, **kw: Any
-    ) -> Self_MemoizedSelectEntities:
+    def _clone(self, **kw: Any) -> Self:
         c = self.__class__.__new__(self.__class__)
         c.__dict__ = {k: v for k, v in self.__dict__.items()}
 
         c._is_clone_of = self.__dict__.get("_is_clone_of", self)
-        return c  # type: ignore
+        return c
 
     @classmethod
     def _generate_for_statement(cls, select_stmt: Select[Any]) -> None:
@@ -5111,9 +5033,6 @@ class _MemoizedSelectEntities(
             select_stmt._memoized_select_entities += (self,)
             select_stmt._raw_columns = []
             select_stmt._setup_joins = select_stmt._with_options = ()
-
-
-SelfSelect = typing.TypeVar("SelfSelect", bound="Select[Any]")
 
 
 class Select(
@@ -5226,13 +5145,13 @@ class Select(
         GenerativeSelect.__init__(self)
 
     def _scalar_type(self) -> TypeEngine[Any]:
+        if not self._raw_columns:
+            return NULLTYPE
         elem = self._raw_columns[0]
         cols = list(elem._select_iterable)
         return cols[0].type
 
-    def filter(
-        self: SelfSelect, *criteria: _ColumnExpressionArgument[bool]
-    ) -> SelfSelect:
+    def filter(self, *criteria: _ColumnExpressionArgument[bool]) -> Self:
         """A synonym for the :meth:`_sql.Select.where` method."""
 
         return self.where(*criteria)
@@ -5276,7 +5195,7 @@ class Select(
         def scalar_subquery(self) -> ScalarSelect[Any]:
             ...
 
-    def filter_by(self: SelfSelect, **kwargs: Any) -> SelfSelect:
+    def filter_by(self, **kwargs: Any) -> Self:
         r"""apply the given filtering criterion as a WHERE clause
         to this select.
 
@@ -5334,7 +5253,7 @@ class Select(
         return meth(self)
 
     def from_statement(
-        self, statement: ExecutableReturnsRows
+        self, statement: roles.ReturnsRowsRole
     ) -> ExecutableReturnsRows:
         """Apply the columns which this :class:`.Select` would select
         onto another statement.
@@ -5360,13 +5279,13 @@ class Select(
 
     @_generative
     def join(
-        self: SelfSelect,
+        self,
         target: _JoinTargetArgument,
         onclause: Optional[_OnClauseArgument] = None,
         *,
         isouter: bool = False,
         full: bool = False,
-    ) -> SelfSelect:
+    ) -> Self:
         r"""Create a SQL JOIN against this :class:`_expression.Select`
         object's criterion
         and apply generatively, returning the newly resulting
@@ -5443,13 +5362,13 @@ class Select(
         return self
 
     def outerjoin_from(
-        self: SelfSelect,
+        self,
         from_: _FromClauseArgument,
         target: _JoinTargetArgument,
         onclause: Optional[_OnClauseArgument] = None,
         *,
         full: bool = False,
-    ) -> SelfSelect:
+    ) -> Self:
         r"""Create a SQL LEFT OUTER JOIN against this
         :class:`_expression.Select` object's criterion and apply generatively,
         returning the newly resulting :class:`_expression.Select`.
@@ -5463,14 +5382,14 @@ class Select(
 
     @_generative
     def join_from(
-        self: SelfSelect,
+        self,
         from_: _FromClauseArgument,
         target: _JoinTargetArgument,
         onclause: Optional[_OnClauseArgument] = None,
         *,
         isouter: bool = False,
         full: bool = False,
-    ) -> SelfSelect:
+    ) -> Self:
         r"""Create a SQL JOIN against this :class:`_expression.Select`
         object's criterion
         and apply generatively, returning the newly resulting
@@ -5538,12 +5457,12 @@ class Select(
         return self
 
     def outerjoin(
-        self: SelfSelect,
+        self,
         target: _JoinTargetArgument,
         onclause: Optional[_OnClauseArgument] = None,
         *,
         full: bool = False,
-    ) -> SelfSelect:
+    ) -> Self:
         """Create a left outer join.
 
         Parameters are the same as that of :meth:`_expression.Select.join`.
@@ -6039,9 +5958,7 @@ class Select(
     _whereclause = whereclause
 
     @_generative
-    def where(
-        self: SelfSelect, *whereclause: _ColumnExpressionArgument[bool]
-    ) -> SelfSelect:
+    def where(self, *whereclause: _ColumnExpressionArgument[bool]) -> Self:
         """Return a new :func:`_expression.select` construct with
         the given expression added to
         its WHERE clause, joined to the existing clause via AND, if any.
@@ -6052,15 +5969,13 @@ class Select(
 
         for criterion in whereclause:
             where_criteria: ColumnElement[Any] = coercions.expect(
-                roles.WhereHavingRole, criterion
+                roles.WhereHavingRole, criterion, apply_propagate_attrs=self
             )
             self._where_criteria += (where_criteria,)
         return self
 
     @_generative
-    def having(
-        self: SelfSelect, *having: _ColumnExpressionArgument[bool]
-    ) -> SelfSelect:
+    def having(self, *having: _ColumnExpressionArgument[bool]) -> Self:
         """Return a new :func:`_expression.select` construct with
         the given expression added to
         its HAVING clause, joined to the existing clause via AND, if any.
@@ -6069,15 +5984,13 @@ class Select(
 
         for criterion in having:
             having_criteria = coercions.expect(
-                roles.WhereHavingRole, criterion
+                roles.WhereHavingRole, criterion, apply_propagate_attrs=self
             )
             self._having_criteria += (having_criteria,)
         return self
 
     @_generative
-    def distinct(
-        self: SelfSelect, *expr: _ColumnExpressionArgument[Any]
-    ) -> SelfSelect:
+    def distinct(self, *expr: _ColumnExpressionArgument[Any]) -> Self:
         r"""Return a new :func:`_expression.select` construct which
         will apply DISTINCT to its columns clause.
 
@@ -6092,16 +6005,15 @@ class Select(
         if expr:
             self._distinct = True
             self._distinct_on = self._distinct_on + tuple(
-                coercions.expect(roles.ByOfRole, e) for e in expr
+                coercions.expect(roles.ByOfRole, e, apply_propagate_attrs=self)
+                for e in expr
             )
         else:
             self._distinct = True
         return self
 
     @_generative
-    def select_from(
-        self: SelfSelect, *froms: _FromClauseArgument
-    ) -> SelfSelect:
+    def select_from(self, *froms: _FromClauseArgument) -> Self:
         r"""Return a new :func:`_expression.select` construct with the
         given FROM expression(s)
         merged into its list of FROM objects.
@@ -6146,9 +6058,9 @@ class Select(
 
     @_generative
     def correlate(
-        self: SelfSelect,
+        self,
         *fromclauses: Union[Literal[None, False], _FromClauseArgument],
-    ) -> SelfSelect:
+    ) -> Self:
         r"""Return a new :class:`_expression.Select`
         which will correlate the given FROM
         clauses to that of an enclosing :class:`_expression.Select`.
@@ -6219,9 +6131,9 @@ class Select(
 
     @_generative
     def correlate_except(
-        self: SelfSelect,
+        self,
         *fromclauses: Union[Literal[None, False], _FromClauseArgument],
-    ) -> SelfSelect:
+    ) -> Self:
         r"""Return a new :class:`_expression.Select`
         which will omit the given FROM
         clauses from the auto-correlation process.
@@ -6295,6 +6207,18 @@ class Select(
         :class:`_expression.FromClause`, the collection will use the
         :class:`_expression.ColumnElement` objects that are in the
         :attr:`_expression.FromClause.c` collection of the from element.
+
+        A use case for the :attr:`_sql.Select.selected_columns` collection is
+        to allow the existing columns to be referenced when adding additional
+        criteria, e.g.::
+
+            def filter_on_id(my_select, id):
+                return my_select.where(my_select.selected_columns['id'] == id)
+
+            stmt = select(MyModel)
+
+            # adds "WHERE id=:param" to the statement
+            stmt = filter_on_id(stmt, 42)
 
         .. note::
 
@@ -6377,7 +6301,6 @@ class Select(
                 if is_column_element(c)
             ]
         else:
-
             prox = [
                 c._make_proxy(
                     subquery,
@@ -6403,7 +6326,7 @@ class Select(
         )
 
     def self_group(
-        self: Self, against: Optional[OperatorType] = None
+        self, against: Optional[OperatorType] = None
     ) -> Union[SelectStatementGrouping[Self], Self]:
         ...
         """Return a 'grouping' construct as per the
@@ -6531,11 +6454,6 @@ class Select(
         return CompoundSelect._create_intersect_all(self, *other)
 
 
-SelfScalarSelect = typing.TypeVar(
-    "SelfScalarSelect", bound="ScalarSelect[Any]"
-)
-
-
 class ScalarSelect(
     roles.InElementRole, Generative, GroupedElement, ColumnElement[_T]
 ):
@@ -6571,6 +6489,7 @@ class ScalarSelect(
     def __init__(self, element: SelectBase) -> None:
         self.element = element
         self.type = element._scalar_type()
+        self._propagate_attrs = element._propagate_attrs
 
     def __getattr__(self, attr: str) -> Any:
         return getattr(self.element, attr)
@@ -6593,9 +6512,7 @@ class ScalarSelect(
     c = columns
 
     @_generative
-    def where(
-        self: SelfScalarSelect, crit: _ColumnExpressionArgument[bool]
-    ) -> SelfScalarSelect:
+    def where(self, crit: _ColumnExpressionArgument[bool]) -> Self:
         """Apply a WHERE clause to the SELECT statement referred to
         by this :class:`_expression.ScalarSelect`.
 
@@ -6618,7 +6535,6 @@ class ScalarSelect(
     def self_group(
         self, against: Optional[OperatorType] = None
     ) -> ColumnElement[Any]:
-
         return self
 
     if TYPE_CHECKING:
@@ -6628,9 +6544,9 @@ class ScalarSelect(
 
     @_generative
     def correlate(
-        self: SelfScalarSelect,
+        self,
         *fromclauses: Union[Literal[None, False], _FromClauseArgument],
-    ) -> SelfScalarSelect:
+    ) -> Self:
         r"""Return a new :class:`_expression.ScalarSelect`
         which will correlate the given FROM
         clauses to that of an enclosing :class:`_expression.Select`.
@@ -6664,9 +6580,9 @@ class ScalarSelect(
 
     @_generative
     def correlate_except(
-        self: SelfScalarSelect,
+        self,
         *fromclauses: Union[Literal[None, False], _FromClauseArgument],
-    ) -> SelfScalarSelect:
+    ) -> Self:
         r"""Return a new :class:`_expression.ScalarSelect`
         which will omit the given FROM
         clauses from the auto-correlation process.
@@ -6701,9 +6617,6 @@ class ScalarSelect(
         return self
 
 
-SelfExists = TypeVar("SelfExists", bound="Exists")
-
-
 class Exists(UnaryExpression[bool]):
     """Represent an ``EXISTS`` clause.
 
@@ -6722,6 +6635,7 @@ class Exists(UnaryExpression[bool]):
         __argument: Optional[
             Union[_ColumnsClauseArgument[Any], SelectBase, ScalarSelect[Any]]
         ] = None,
+        /,
     ):
         s: ScalarSelect[Any]
 
@@ -6779,9 +6693,9 @@ class Exists(UnaryExpression[bool]):
         return Select(self)
 
     def correlate(
-        self: SelfExists,
+        self,
         *fromclauses: Union[Literal[None, False], _FromClauseArgument],
-    ) -> SelfExists:
+    ) -> Self:
         """Apply correlation to the subquery noted by this
         :class:`_sql.Exists`.
 
@@ -6797,9 +6711,9 @@ class Exists(UnaryExpression[bool]):
         return e
 
     def correlate_except(
-        self: SelfExists,
+        self,
         *fromclauses: Union[Literal[None, False], _FromClauseArgument],
-    ) -> SelfExists:
+    ) -> Self:
         """Apply correlation to the subquery noted by this
         :class:`_sql.Exists`.
 
@@ -6815,7 +6729,7 @@ class Exists(UnaryExpression[bool]):
         )
         return e
 
-    def select_from(self: SelfExists, *froms: FromClause) -> SelfExists:
+    def select_from(self, *froms: _FromClauseArgument) -> Self:
         """Return a new :class:`_expression.Exists` construct,
         applying the given
         expression to the :meth:`_expression.Select.select_from`
@@ -6832,9 +6746,7 @@ class Exists(UnaryExpression[bool]):
         e.element = self._regroup(lambda element: element.select_from(*froms))
         return e
 
-    def where(
-        self: SelfExists, *clause: _ColumnExpressionArgument[bool]
-    ) -> SelfExists:
+    def where(self, *clause: _ColumnExpressionArgument[bool]) -> Self:
         """Return a new :func:`_expression.exists` construct with the
         given expression added to
         its WHERE clause, joined to the existing clause via AND, if any.
@@ -6851,10 +6763,7 @@ class Exists(UnaryExpression[bool]):
         return e
 
 
-SelfTextualSelect = typing.TypeVar("SelfTextualSelect", bound="TextualSelect")
-
-
-class TextualSelect(SelectBase, Executable, Generative):
+class TextualSelect(SelectBase, ExecutableReturnsRows, Generative):
     """Wrap a :class:`_expression.TextClause` construct within a
     :class:`_expression.SelectBase`
     interface.
@@ -6899,14 +6808,27 @@ class TextualSelect(SelectBase, Executable, Generative):
     def __init__(
         self,
         text: TextClause,
-        columns: List[ColumnClause[Any]],
+        columns: List[_ColumnExpressionArgument[Any]],
+        positional: bool = False,
+    ) -> None:
+        self._init(
+            text,
+            # convert for ORM attributes->columns, etc
+            [
+                coercions.expect(roles.LabeledColumnExprRole, c)
+                for c in columns
+            ],
+            positional,
+        )
+
+    def _init(
+        self,
+        text: TextClause,
+        columns: List[NamedColumn[Any]],
         positional: bool = False,
     ) -> None:
         self.element = text
-        # convert for ORM attributes->columns, etc
-        self.column_args = [
-            coercions.expect(roles.ColumnsClauseRole, c) for c in columns
-        ]
+        self.column_args = columns
         self.positional = positional
 
     @HasMemoized_ro_memoized_attribute
@@ -6949,10 +6871,10 @@ class TextualSelect(SelectBase, Executable, Generative):
 
     @_generative
     def bindparams(
-        self: SelfTextualSelect,
+        self,
         *binds: BindParameter[Any],
         **bind_as_values: Any,
-    ) -> SelfTextualSelect:
+    ) -> Self:
         self.element = self.element.bindparams(*binds, **bind_as_values)
         return self
 

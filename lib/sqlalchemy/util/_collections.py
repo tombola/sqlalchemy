@@ -69,6 +69,7 @@ _VT = TypeVar("_VT", bound=Any)
 _T_co = TypeVar("_T_co", covariant=True)
 
 EMPTY_SET: FrozenSet[Any] = frozenset()
+NONE_SET: FrozenSet[Any] = frozenset([None])
 
 
 def merge_lists_w_ordering(a: List[Any], b: List[Any]) -> List[Any]:
@@ -143,7 +144,7 @@ class FacadeDict(ImmutableDictBase[_KT, _VT]):
     """A dictionary that is not publicly mutable."""
 
     def __new__(cls, *args: Any) -> FacadeDict[Any, Any]:
-        new = dict.__new__(cls)
+        new = ImmutableDictBase.__new__(cls)
         return new
 
     def copy(self) -> NoReturn:
@@ -188,7 +189,7 @@ class Properties(Generic[_T]):
         return dir(super()) + [str(k) for k in self._data.keys()]
 
     def __add__(self, other: Properties[_F]) -> List[Union[_T, _F]]:
-        return list(self) + list(other)  # type: ignore
+        return list(self) + list(other)
 
     def __setitem__(self, key: str, obj: _T) -> None:
         self._data[key] = obj
@@ -288,7 +289,7 @@ sort_dictionary = _ordered_dictionary_sort
 
 
 class WeakSequence(Sequence[_T]):
-    def __init__(self, __elements: Sequence[_T] = ()):
+    def __init__(self, __elements: Sequence[_T] = (), /):
         # adapted from weakref.WeakKeyDictionary, prevent reference
         # cycles in the collection itself
         def _remove(item, selfref=weakref.ref(self)):
@@ -392,16 +393,16 @@ class UniqueAppender(Generic[_T]):
         self.data = data
         self._unique = {}
         if via:
-            self._data_appender = getattr(data, via)  # type: ignore[assignment]  # noqa: E501
+            self._data_appender = getattr(data, via)
         elif hasattr(data, "append"):
-            self._data_appender = cast("List[_T]", data).append  # type: ignore[assignment]  # noqa: E501
+            self._data_appender = cast("List[_T]", data).append
         elif hasattr(data, "add"):
-            self._data_appender = cast("Set[_T]", data).add  # type: ignore[assignment]  # noqa: E501
+            self._data_appender = cast("Set[_T]", data).add
 
     def append(self, item: _T) -> None:
         id_ = id(item)
         if id_ not in self._unique:
-            self._data_appender(item)  # type: ignore[call-arg]
+            self._data_appender(item)
             self._unique[id_] = True
 
     def __iter__(self) -> Iterator[_T]:
@@ -531,8 +532,8 @@ class LRUCache(typing.MutableMapping[_KT, _VT]):
     def get(
         self, key: _KT, default: Optional[Union[_VT, _T]] = None
     ) -> Optional[Union[_VT, _T]]:
-        item = self._data.get(key, default)
-        if item is not default and item is not None:
+        item = self._data.get(key)
+        if item is not None:
             item[2][0] = self._inc_counter()
             return item[1]
         else:
@@ -676,7 +677,7 @@ class ThreadLocalRegistry(ScopedRegistry[_T]):
             return self.registry.value  # type: ignore[no-any-return]
         except AttributeError:
             val = self.registry.value = self.createfunc()
-            return val  # type: ignore[no-any-return]
+            return val
 
     def has(self) -> bool:
         return hasattr(self.registry, "value")

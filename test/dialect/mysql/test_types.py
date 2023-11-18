@@ -462,15 +462,31 @@ class TypeCompileTest(fixtures.TestBase, AssertsCompiledSQL):
             datetime.time(8, 37, 35, 450),
         )
 
+    @testing.combinations(
+        ("sa", sqltypes.Float(), "FLOAT"),
+        ("sa", sqltypes.Double(), "DOUBLE"),
+        ("sa", sqltypes.FLOAT(), "FLOAT"),
+        ("sa", sqltypes.REAL(), "REAL"),
+        ("sa", sqltypes.DOUBLE(), "DOUBLE"),
+        ("sa", sqltypes.DOUBLE_PRECISION(), "DOUBLE PRECISION"),
+        ("mysql", mysql.FLOAT(), "FLOAT"),
+        ("mysql", mysql.DOUBLE(), "DOUBLE"),
+        ("mysql", mysql.REAL(), "REAL"),
+        id_="ira",
+    )
+    def test_float_type_compile(self, type_, sql_text):
+        self.assert_compile(type_, sql_text)
+
 
 class TypeRoundTripTest(fixtures.TestBase, AssertsExecutionResults):
-
     __dialect__ = mysql.dialect()
     __only_on__ = "mysql", "mariadb"
     __backend__ = True
 
     # fixed in mysql-connector as of 2.0.1,
     # see https://bugs.mysql.com/bug.php?id=73266
+
+    @testing.requires.literal_float_coercion
     def test_precision_float_roundtrip(self, metadata, connection):
         t = Table(
             "t",
@@ -550,7 +566,6 @@ class TypeRoundTripTest(fixtures.TestBase, AssertsExecutionResults):
         argnames="store, expected",
     )
     def test_bit_50_roundtrip(self, connection, bit_table, store, expected):
-
         reflected = Table("mysql_bits", MetaData(), autoload_with=connection)
 
         expected = expected or store
@@ -745,7 +760,6 @@ class JSONTest(fixtures.TestBase):
 
     @testing.requires.reflects_json_type
     def test_reflection(self, metadata, connection):
-
         Table("mysql_json", metadata, Column("foo", mysql.JSON))
         metadata.create_all(connection)
 
@@ -770,7 +784,6 @@ class JSONTest(fixtures.TestBase):
 class EnumSetTest(
     fixtures.TestBase, AssertsExecutionResults, AssertsCompiledSQL
 ):
-
     __only_on__ = "mysql", "mariadb"
     __dialect__ = mysql.dialect()
     __backend__ = True
@@ -1214,7 +1227,6 @@ class EnumSetTest(
         )
 
     def test_enum_parse(self, metadata, connection):
-
         enum_table = Table(
             "mysql_enum",
             metadata,

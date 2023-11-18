@@ -35,7 +35,6 @@ from sqlalchemy import types as sqltypes
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.dialects.sqlite import base as sqlite
 from sqlalchemy.dialects.sqlite import insert
-from sqlalchemy.dialects.sqlite import provision
 from sqlalchemy.dialects.sqlite import pysqlite as pysqlite_dialect
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.schema import CreateTable
@@ -46,7 +45,6 @@ from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import AssertsExecutionResults
 from sqlalchemy.testing import combinations
-from sqlalchemy.testing import config
 from sqlalchemy.testing import engines
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import eq_ignore_whitespace
@@ -70,7 +68,6 @@ def exec_sql(engine, sql, *args, **kwargs):
 
 
 class TestTypes(fixtures.TestBase, AssertsExecutionResults):
-
     __only_on__ = "sqlite"
 
     __backend__ = True
@@ -111,7 +108,7 @@ class TestTypes(fixtures.TestBase, AssertsExecutionResults):
         )
 
     def test_cant_parse_datetime_message(self, connection):
-        for (typ, disp) in [
+        for typ, disp in [
             (Time, "time"),
             (DateTime, "datetime"),
             (Date, "date"),
@@ -284,7 +281,6 @@ class TestTypes(fixtures.TestBase, AssertsExecutionResults):
 
 
 class JSONTest(fixtures.TestBase):
-
     __requires__ = ("json_type",)
     __only_on__ = "sqlite"
     __backend__ = True
@@ -443,12 +439,10 @@ class TimeTest(fixtures.TestBase, AssertsCompiledSQL):
 
 
 class DefaultsTest(fixtures.TestBase, AssertsCompiledSQL):
-
     __only_on__ = "sqlite"
     __backend__ = True
 
     def test_default_reflection(self, connection, metadata):
-
         specs = [
             (String(3), '"foo"'),
             (sqltypes.NUMERIC(10, 2), "100.50"),
@@ -476,7 +470,6 @@ class DefaultsTest(fixtures.TestBase, AssertsCompiledSQL):
         "table_info()",
     )
     def test_default_reflection_2(self):
-
         db = testing.db
         m = MetaData()
         expected = ["'my_default'", "0"]
@@ -578,7 +571,6 @@ class DefaultsTest(fixtures.TestBase, AssertsCompiledSQL):
 class DialectTest(
     fixtures.TestBase, AssertsExecutionResults, AssertsCompiledSQL
 ):
-
     __only_on__ = "sqlite"
     __backend__ = True
 
@@ -792,17 +784,20 @@ class DialectTest(
         )
 
 
-class AttachedDBTest(fixtures.TestBase):
+class AttachedDBTest(fixtures.TablesTest):
     __only_on__ = "sqlite"
     __backend__ = True
 
-    def _fixture(self):
-        meta = self.metadata
+    run_create_tables = "each"
+
+    @classmethod
+    def define_tables(self, metadata):
+        meta = metadata
 
         Table("created", meta, Column("foo", Integer), Column("bar", String))
         Table("local_only", meta, Column("q", Integer), Column("p", Integer))
 
-        ct = Table(
+        Table(
             "created",
             meta,
             Column("id", Integer),
@@ -818,33 +813,15 @@ class AttachedDBTest(fixtures.TestBase):
             schema="test_schema",
         )
 
-        with self.conn.begin():
-            meta.create_all(self.conn)
-        return ct
-
-    def setup_test(self):
-        self.engine = engines.testing_engine(options={"use_reaper": False})
-
-        provision._sqlite_post_configure_engine(
-            self.engine.url, self.engine, config.ident
-        )
-        self.conn = self.engine.connect()
-        self.metadata = MetaData()
-
-    def teardown_test(self):
-        self.conn.rollback()
-        with self.conn.begin():
-            self.metadata.drop_all(self.conn)
-        self.conn.close()
-        self.engine.dispose()
-
-    def test_no_tables(self):
-        insp = inspect(self.conn)
+    def test_no_tables(self, connection):
+        tt = self.tables("test_schema.created", "test_schema.another_created")
+        for t in tt:
+            t.drop(connection)
+        insp = inspect(connection)
         eq_(insp.get_table_names("test_schema"), [])
 
-    def test_column_names(self):
-        self._fixture()
-        insp = inspect(self.conn)
+    def test_column_names(self, connection):
+        insp = inspect(connection)
         eq_(
             [
                 d["name"]
@@ -868,78 +845,68 @@ class AttachedDBTest(fixtures.TestBase):
 
         eq_([d["name"] for d in insp.get_columns("local_only")], ["q", "p"])
 
-    def test_table_names_present(self):
-        self._fixture()
-        insp = inspect(self.conn)
+    def test_table_names_present(self, connection):
+        insp = inspect(connection)
         eq_(
             set(insp.get_table_names("test_schema")),
             {"created", "another_created"},
         )
 
-    def test_table_names_system(self):
-        self._fixture()
-        insp = inspect(self.conn)
+    def test_table_names_system(self, connection):
+        insp = inspect(connection)
         eq_(
             set(insp.get_table_names("test_schema")),
             {"created", "another_created"},
         )
 
-    def test_schema_names(self):
-        self._fixture()
-        insp = inspect(self.conn)
+    def test_schema_names(self, connection):
+        insp = inspect(connection)
         eq_(insp.get_schema_names(), ["main", "test_schema"])
 
         # implicitly creates a "temp" schema
-        self.conn.exec_driver_sql("select * from sqlite_temp_master")
+        connection.exec_driver_sql("select * from sqlite_temp_master")
 
         # we're not including it
-        insp = inspect(self.conn)
+        insp = inspect(connection)
         eq_(insp.get_schema_names(), ["main", "test_schema"])
 
-    def test_reflect_system_table(self):
+    def test_reflect_system_table(self, connection):
         meta = MetaData()
         alt_master = Table(
             "sqlite_master",
             meta,
-            autoload_with=self.conn,
+            autoload_with=connection,
             schema="test_schema",
         )
         assert len(alt_master.c) > 0
 
-    def test_reflect_user_table(self):
-        self._fixture()
-
+    def test_reflect_user_table(self, connection):
         m2 = MetaData()
-        c2 = Table("created", m2, autoload_with=self.conn)
+        c2 = Table("created", m2, autoload_with=connection)
         eq_(len(c2.c), 2)
 
-    def test_crud(self):
-        ct = self._fixture()
+    def test_crud(self, connection):
+        (ct,) = self.tables("test_schema.created")
+        connection.execute(ct.insert(), {"id": 1, "name": "foo"})
+        eq_(connection.execute(ct.select()).fetchall(), [(1, "foo")])
 
-        with self.conn.begin():
-            self.conn.execute(ct.insert(), {"id": 1, "name": "foo"})
-            eq_(self.conn.execute(ct.select()).fetchall(), [(1, "foo")])
+        connection.execute(ct.update(), {"id": 2, "name": "bar"})
+        eq_(connection.execute(ct.select()).fetchall(), [(2, "bar")])
+        connection.execute(ct.delete())
+        eq_(connection.execute(ct.select()).fetchall(), [])
 
-            self.conn.execute(ct.update(), {"id": 2, "name": "bar"})
-            eq_(self.conn.execute(ct.select()).fetchall(), [(2, "bar")])
-            self.conn.execute(ct.delete())
-            eq_(self.conn.execute(ct.select()).fetchall(), [])
+    def test_col_targeting(self, connection):
+        (ct,) = self.tables("test_schema.created")
 
-    def test_col_targeting(self):
-        ct = self._fixture()
-
-        with self.conn.begin():
-            self.conn.execute(ct.insert(), {"id": 1, "name": "foo"})
-        row = self.conn.execute(ct.select()).first()
+        connection.execute(ct.insert(), {"id": 1, "name": "foo"})
+        row = connection.execute(ct.select()).first()
         eq_(row._mapping["id"], 1)
         eq_(row._mapping["name"], "foo")
 
-    def test_col_targeting_union(self):
-        ct = self._fixture()
-
-        with self.conn.begin():
-            self.conn.execute(ct.insert(), {"id": 1, "name": "foo"})
-        row = self.conn.execute(ct.select().union(ct.select())).first()
+    def test_col_targeting_union(self, connection):
+        (ct,) = self.tables("test_schema.created")
+        connection.execute(ct.insert(), {"id": 1, "name": "foo"})
+        row = connection.execute(ct.select().union(ct.select())).first()
         eq_(row._mapping["id"], 1)
         eq_(row._mapping["name"], "foo")
 
@@ -1065,7 +1032,6 @@ class SQLTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
     def test_column_defaults_ddl(self):
-
         t = Table(
             "t",
             MetaData(),
@@ -1180,7 +1146,6 @@ class SQLTest(fixtures.TestBase, AssertsCompiledSQL):
 
 
 class OnConflictDDLTest(fixtures.TestBase, AssertsCompiledSQL):
-
     __dialect__ = sqlite.dialect()
 
     def test_on_conflict_clause_column_not_null(self):
@@ -1234,7 +1199,6 @@ class OnConflictDDLTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
     def test_on_conflict_clause_unique_constraint(self):
-
         meta = MetaData()
         t = Table(
             "n",
@@ -1252,7 +1216,6 @@ class OnConflictDDLTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
     def test_on_conflict_clause_primary_key(self):
-
         meta = MetaData()
         t = Table(
             "n",
@@ -1274,7 +1237,6 @@ class OnConflictDDLTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
     def test_on_conflict_clause_primary_key_constraint_from_column(self):
-
         meta = MetaData()
         t = Table(
             "n",
@@ -1295,7 +1257,6 @@ class OnConflictDDLTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
     def test_on_conflict_clause_check_constraint(self):
-
         meta = MetaData()
         t = Table(
             "n",
@@ -1313,7 +1274,6 @@ class OnConflictDDLTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
     def test_on_conflict_clause_check_constraint_from_column(self):
-
         meta = MetaData()
         t = Table(
             "n",
@@ -1334,7 +1294,6 @@ class OnConflictDDLTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
     def test_on_conflict_clause_primary_key_constraint(self):
-
         meta = MetaData()
         t = Table(
             "n",
@@ -1525,7 +1484,6 @@ metadata = cattable = matchtable = None
 
 
 class MatchTest(fixtures.TestBase, AssertsCompiledSQL):
-
     __only_on__ = "sqlite"
     __skip_if__ = (full_text_search_missing,)
     __backend__ = True
@@ -1770,7 +1728,6 @@ class ConstraintReflectionTest(fixtures.TestBase):
     @classmethod
     def setup_test_class(cls):
         with testing.db.begin() as conn:
-
             conn.exec_driver_sql("CREATE TABLE a1 (id INTEGER PRIMARY KEY)")
             conn.exec_driver_sql("CREATE TABLE a2 (id INTEGER PRIMARY KEY)")
             conn.exec_driver_sql(
@@ -1959,7 +1916,6 @@ class ConstraintReflectionTest(fixtures.TestBase):
 
     @testing.fixture
     def temp_table_fixture(self, connection):
-
         connection.exec_driver_sql(
             "CREATE TEMPORARY TABLE g "
             "(x INTEGER, CONSTRAINT foo_gx UNIQUE(x))"
@@ -2009,7 +1965,6 @@ class ConstraintReflectionTest(fixtures.TestBase):
                 with mock.patch.object(
                     dialect, "_get_table_sql", _get_table_sql
                 ):
-
                     fkeys = dialect.get_foreign_keys(None, "foo")
                     eq_(
                         fkeys,
@@ -2427,7 +2382,6 @@ class ConstraintReflectionTest(fixtures.TestBase):
     def test_unique_constraint_named_broken_temp(
         self, connection, temp_table_fixture
     ):
-
         inspector = inspect(connection)
         eq_(
             inspector.get_unique_constraints("g"),
@@ -2624,7 +2578,6 @@ class SavepointTest(fixtures.TablesTest):
 
 
 class TypeReflectionTest(fixtures.TestBase):
-
     __only_on__ = "sqlite"
     __backend__ = True
 
@@ -2786,6 +2739,31 @@ class RegexpTest(fixtures.TestBase, testing.AssertsCompiledSQL):
             "mytable", column("myid", Integer), column("name", String)
         )
 
+    @testing.only_on("sqlite >= 3.9")
+    def test_determinsitic_parameter(self):
+        """for #9379, make sure that "deterministic=True" is used when we are
+        on python 3.8 with modern SQLite version.
+
+        For the case where we are not on py3.8 or not on modern sqlite version,
+        the rest of the test suite confirms that connection still passes.
+
+        """
+        e = create_engine("sqlite://")
+
+        @event.listens_for(e, "do_connect", retval=True)
+        def _mock_connect(dialect, conn_rec, cargs, cparams):
+            conn = e.dialect.loaded_dbapi.connect(":memory:")
+            return mock.Mock(wraps=conn)
+
+        c = e.connect()
+        eq_(
+            c.connection.driver_connection.create_function.mock_calls,
+            [
+                mock.call("regexp", 2, mock.ANY, deterministic=True),
+                mock.call("floor", 1, mock.ANY, deterministic=True),
+            ],
+        )
+
     def test_regexp_match(self):
         self.assert_compile(
             self.table.c.myid.regexp_match("pattern"),
@@ -2852,7 +2830,6 @@ class RegexpTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
 
 class OnConflictTest(AssertsCompiledSQL, fixtures.TablesTest):
-
     __only_on__ = ("sqlite >= 3.24.0",)
     __backend__ = True
 
@@ -2969,7 +2946,6 @@ class OnConflictTest(AssertsCompiledSQL, fixtures.TablesTest):
                 stmt.on_conflict_do_nothing,
                 stmt.on_conflict_do_update,
             ):
-
                 with testing.expect_raises_message(
                     exc.InvalidRequestError,
                     "This Insert construct already has an "
@@ -3567,7 +3543,6 @@ class ReflectInternalSchemaTables(fixtures.TablesTest):
         eq_(res, ["sqlitetemptable"])
 
     def test_get_temp_view_names(self, connection):
-
         view = (
             "CREATE TEMPORARY VIEW sqlitetempview AS "
             "SELECT * FROM sqliteatable"

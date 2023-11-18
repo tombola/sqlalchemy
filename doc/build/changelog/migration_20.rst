@@ -471,7 +471,7 @@ are subject to these errors, as would occur in the example below::
         id: int = Column(Integer, primary_key=True)
 
         # will raise
-        bars: list["Bar"] = relationship("Bar", back_populates="foo")
+        bars: List["Bar"] = relationship("Bar", back_populates="foo")
 
 
     class Bar(Base):
@@ -512,6 +512,7 @@ that descend from ``Base``::
 
     Base = declarative_base(cls=Base)
 
+
     # existing mapping proceeds, Declarative will ignore any annotations
     # which don't include ``Mapped[]``
     class Foo(Base):
@@ -519,7 +520,7 @@ that descend from ``Base``::
 
         id: int = Column(Integer, primary_key=True)
 
-        bars: list["Bar"] = relationship("Bar", back_populates="foo")
+        bars: List["Bar"] = relationship("Bar", back_populates="foo")
 
 
     class Bar(Base):
@@ -770,7 +771,7 @@ the ORM-level :meth:`_orm.Session.execute` method)::
         t = Table("t", metadata_obj, autoload_with=connection)
 
         # execute SQL statements
-        result = conn.execute(t.select())
+        result = connection.execute(t.select())
 
 **Discussion**
 
@@ -1522,6 +1523,9 @@ following the table, and may include additional notes not summarized here.
             select(func.count()).
             select_from(User)
           )
+
+          # or
+
           session.scalar(
             select(func.count(User.id))
           )
@@ -1606,7 +1610,7 @@ necessary when using joined eager loading, the :meth:`_engine.Result.unique`
 modifier must be called first.
 
 Documentation for all new features of :func:`_sql.select` including execution
-options, etc. are at :doc:`/orm/queryguide`.
+options, etc. are at :doc:`/orm/queryguide/index`.
 
 Below are some examples of how to migrate to :func:`_sql.select`::
 
@@ -1683,7 +1687,7 @@ ORM-specific compiler plugins receive the
 :class:`_sql.Select` construct and interpret its contents in terms of an
 ORM-style query, before passing off to the core-level compiler in order to
 create a SQL string.  With the advent of the new
-`SQL compilation caching system <change_4639>`,
+:ref:`SQL compilation caching system <change_4639>`,
 the majority of this ORM logic is also cached.
 
 
@@ -2003,7 +2007,7 @@ The new approach makes use of the :func:`_orm.aliased` construct so that the
 ORM internals don't need to guess which entities and columns should be adapted
 and in what way; in the example above, the ``ua`` and ``aa`` objects, both
 of which are :class:`_orm.AliasedClass` instances, provide to the internals
-an unambiguous marker as to where the subquery should be referred towards
+an unambiguous marker as to where the subquery should be referenced
 as well as what entity column or relationship is being considered for a given
 component of the query.
 

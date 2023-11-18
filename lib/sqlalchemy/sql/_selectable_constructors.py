@@ -140,6 +140,7 @@ def exists(
     __argument: Optional[
         Union[_ColumnsClauseArgument[Any], SelectBase, ScalarSelect[Any]]
     ] = None,
+    /,
 ) -> Exists:
     """Construct a new :class:`_expression.Exists` construct.
 
@@ -256,8 +257,6 @@ def join(
 
     :param full: if True, render a FULL OUTER JOIN, instead of JOIN.
 
-     .. versionadded:: 1.1
-
     .. seealso::
 
         :meth:`_expression.FromClause.join` - method form,
@@ -285,8 +284,6 @@ def lateral(
     FROM clauses of that SELECT.   It is a special case of subquery
     only supported by a small number of backends, currently more recent
     PostgreSQL versions.
-
-    .. versionadded:: 1.1
 
     .. seealso::
 
@@ -334,18 +331,20 @@ def outerjoin(
 
 
 @overload
-def select(__ent0: _TCCA[_T0]) -> Select[Tuple[_T0]]:
-    ...
-
-
-@overload
-def select(__ent0: _TCCA[_T0], __ent1: _TCCA[_T1]) -> Select[Tuple[_T0, _T1]]:
+def select(__ent0: _TCCA[_T0], /) -> Select[Tuple[_T0]]:
     ...
 
 
 @overload
 def select(
-    __ent0: _TCCA[_T0], __ent1: _TCCA[_T1], __ent2: _TCCA[_T2]
+    __ent0: _TCCA[_T0], __ent1: _TCCA[_T1], /
+) -> Select[Tuple[_T0, _T1]]:
+    ...
+
+
+@overload
+def select(
+    __ent0: _TCCA[_T0], __ent1: _TCCA[_T1], __ent2: _TCCA[_T2], /
 ) -> Select[Tuple[_T0, _T1, _T2]]:
     ...
 
@@ -356,6 +355,7 @@ def select(
     __ent1: _TCCA[_T1],
     __ent2: _TCCA[_T2],
     __ent3: _TCCA[_T3],
+    /,
 ) -> Select[Tuple[_T0, _T1, _T2, _T3]]:
     ...
 
@@ -367,6 +367,7 @@ def select(
     __ent2: _TCCA[_T2],
     __ent3: _TCCA[_T3],
     __ent4: _TCCA[_T4],
+    /,
 ) -> Select[Tuple[_T0, _T1, _T2, _T3, _T4]]:
     ...
 
@@ -379,6 +380,7 @@ def select(
     __ent3: _TCCA[_T3],
     __ent4: _TCCA[_T4],
     __ent5: _TCCA[_T5],
+    /,
 ) -> Select[Tuple[_T0, _T1, _T2, _T3, _T4, _T5]]:
     ...
 
@@ -392,6 +394,7 @@ def select(
     __ent4: _TCCA[_T4],
     __ent5: _TCCA[_T5],
     __ent6: _TCCA[_T6],
+    /,
 ) -> Select[Tuple[_T0, _T1, _T2, _T3, _T4, _T5, _T6]]:
     ...
 
@@ -406,6 +409,7 @@ def select(
     __ent5: _TCCA[_T5],
     __ent6: _TCCA[_T6],
     __ent7: _TCCA[_T7],
+    /,
 ) -> Select[Tuple[_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7]]:
     ...
 
@@ -421,6 +425,7 @@ def select(
     __ent6: _TCCA[_T6],
     __ent7: _TCCA[_T7],
     __ent8: _TCCA[_T8],
+    /,
 ) -> Select[Tuple[_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8]]:
     ...
 
@@ -437,6 +442,7 @@ def select(
     __ent7: _TCCA[_T7],
     __ent8: _TCCA[_T8],
     __ent9: _TCCA[_T9],
+    /,
 ) -> Select[Tuple[_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8, _T9]]:
     ...
 
@@ -502,11 +508,6 @@ def table(name: str, *columns: ColumnClause[Any], **kw: Any) -> TableClause:
     :class:`_schema.Table` object.
     It may be used to construct lightweight table constructs.
 
-    .. versionchanged:: 1.0.0 :func:`_expression.table` can now
-       be imported from the plain ``sqlalchemy`` namespace like any
-       other SQL element.
-
-
     :param name: Name of the table.
 
     :param columns: A collection of :func:`_expression.column` constructs.
@@ -556,8 +557,6 @@ def tablesample(
         SELECT alias.people_id FROM
         people AS alias TABLESAMPLE bernoulli(:bernoulli_1)
         REPEATABLE (random())
-
-    .. versionadded:: 1.1
 
     :param sampling: a ``float`` percentage between 0 and 100 or
         :class:`_functions.Function`.

@@ -59,6 +59,7 @@ from ..sql.base import Options
 from ..sql.dml import UpdateBase
 from ..sql.elements import GroupedElement
 from ..sql.elements import TextClause
+from ..sql.selectable import CompoundSelectState
 from ..sql.selectable import LABEL_STYLE_DISAMBIGUATE_ONLY
 from ..sql.selectable import LABEL_STYLE_NONE
 from ..sql.selectable import LABEL_STYLE_TABLENAME_PLUS_COL
@@ -141,6 +142,7 @@ class QueryContext:
         _lazy_loaded_from = None
         _legacy_uniquing = False
         _sa_top_level_orm_context = None
+        _is_user_refresh = False
 
     def __init__(
         self,
@@ -208,6 +210,45 @@ _orm_load_exec_options = util.immutabledict(
 class AbstractORMCompileState(CompileState):
     is_dml_returning = False
 
+    def _init_global_attributes(
+        self, statement, compiler, *, toplevel, process_criteria_for_toplevel
+    ):
+        self.attributes = {}
+
+        if compiler is None:
+            # this is the legacy / testing only ORM _compile_state() use case.
+            # there is no need to apply criteria options for this.
+            self.global_attributes = ga = {}
+            assert toplevel
+            return
+        else:
+            self.global_attributes = ga = compiler._global_attributes
+
+        if toplevel:
+            ga["toplevel_orm"] = True
+
+            if process_criteria_for_toplevel:
+                for opt in statement._with_options:
+                    if opt._is_criteria_option:
+                        opt.process_compile_state(self)
+
+            return
+        elif ga.get("toplevel_orm", False):
+            return
+
+        stack_0 = compiler.stack[0]
+
+        try:
+            toplevel_stmt = stack_0["selectable"]
+        except KeyError:
+            pass
+        else:
+            for opt in toplevel_stmt._with_options:
+                if opt._is_compile_state and opt._is_criteria_option:
+                    opt.process_compile_state(self)
+
+        ga["toplevel_orm"] = True
+
     @classmethod
     def create_for_statement(
         cls,
@@ -272,6 +313,51 @@ class AbstractORMCompileState(CompileState):
         result,
     ):
         raise NotImplementedError()
+
+
+class AutoflushOnlyORMCompileState(AbstractORMCompileState):
+    """ORM compile state that is a passthrough, except for autoflush."""
+
+    @classmethod
+    def orm_pre_session_exec(
+        cls,
+        session,
+        statement,
+        params,
+        execution_options,
+        bind_arguments,
+        is_pre_event,
+    ):
+        # consume result-level load_options.  These may have been set up
+        # in an ORMExecuteState hook
+        (
+            load_options,
+            execution_options,
+        ) = QueryContext.default_load_options.from_execution_options(
+            "_sa_orm_load_options",
+            {
+                "autoflush",
+            },
+            execution_options,
+            statement._execution_options,
+        )
+
+        if not is_pre_event and load_options._autoflush:
+            session._autoflush()
+
+        return statement, execution_options
+
+    @classmethod
+    def orm_setup_cursor_result(
+        cls,
+        session,
+        statement,
+        params,
+        execution_options,
+        bind_arguments,
+        result,
+    ):
+        return result
 
 
 class ORMCompileState(AbstractORMCompileState):
@@ -359,7 +445,6 @@ class ORMCompileState(AbstractORMCompileState):
     def _column_naming_convention(
         cls, label_style: SelectLabelStyle, legacy: bool
     ) -> _LabelConventionCallable:
-
         if legacy:
 
             def name(col, col_name=None):
@@ -386,7 +471,6 @@ class ORMCompileState(AbstractORMCompileState):
         bind_arguments,
         is_pre_event,
     ):
-
         # consume result-level load_options.  These may have been set up
         # in an ORMExecuteState hook
         (
@@ -410,6 +494,13 @@ class ORMCompileState(AbstractORMCompileState):
         #    this will disable the ResultSetMetadata._adapt_to_context()
         #    step which we don't need, as we have result processors cached
         #    against the original SELECT statement before caching.
+
+        if "sa_top_level_orm_context" in execution_options:
+            ctx = execution_options["sa_top_level_orm_context"]
+            execution_options = ctx.query._execution_options.merge_with(
+                ctx.execution_options, execution_options
+            )
+
         if not execution_options:
             execution_options = _orm_load_exec_options
         else:
@@ -428,9 +519,10 @@ class ORMCompileState(AbstractORMCompileState):
         ):
             util.warn(
                 "Loader depth for query is excessively deep; caching will "
-                "be disabled for additional loaders.  Consider using the "
-                "recursion_depth feature for deeply nested recursive eager "
-                "loaders."
+                "be disabled for additional loaders.   For recursive eager "
+                "loaders consider using the recursion_depth feature.  "
+                "Use the compiled_cache=None execution option to "
+                "skip this warning."
             )
             execution_options = execution_options.union(
                 {"compiled_cache": None}
@@ -618,18 +710,15 @@ class ORMFromStatementCompileState(ORMCompileState):
         compiler: Optional[SQLCompiler],
         **kw: Any,
     ) -> ORMFromStatementCompileState:
+        assert isinstance(statement_container, FromStatement)
 
-        if compiler is not None:
-            toplevel = not compiler.stack
-        else:
-            toplevel = True
-
-        if not toplevel:
+        if compiler is not None and compiler.stack:
             raise sa_exc.CompileError(
                 "The ORM FromStatement construct only supports being "
                 "invoked as the topmost statement, as it is only intended to "
                 "define how result rows should be returned."
             )
+
         self = cls.__new__(cls)
         self._primary_entity = None
 
@@ -677,17 +766,17 @@ class ORMFromStatementCompileState(ORMCompileState):
 
         self.current_path = statement_container._compile_options._current_path
 
-        if toplevel and statement_container._with_options:
-            self.attributes = {}
-            self.global_attributes = compiler._global_attributes
+        self._init_global_attributes(
+            statement_container,
+            compiler,
+            process_criteria_for_toplevel=False,
+            toplevel=True,
+        )
 
+        if statement_container._with_options:
             for opt in statement_container._with_options:
                 if opt._is_compile_state:
                     opt.process_compile_state(self)
-
-        else:
-            self.attributes = {}
-            self.global_attributes = compiler._global_attributes
 
         if statement_container._with_context_options:
             for fn, key in statement_container._with_context_options:
@@ -731,19 +820,13 @@ class ORMFromStatementCompileState(ORMCompileState):
             # those columns completely, don't interfere with the compiler
             # at all; just in ORM land, use an adapter to convert from
             # our ORM columns to whatever columns are in the statement,
-            # before we look in the result row.  If the inner statement is
-            # not ORM enabled, assume looser col matching based on name
-            statement_is_orm = (
-                self.statement._propagate_attrs.get(
-                    "compile_state_plugin", None
-                )
-                == "orm"
-            )
-
+            # before we look in the result row. Adapt on names
+            # to accept cases such as issue #9217, however also allow
+            # this to be overridden for cases such as #9273.
             self._from_obj_alias = ORMStatementAdapter(
                 _TraceAdaptRole.ADAPT_FROM_STATEMENT,
                 self.statement,
-                adapt_on_names=not statement_is_orm,
+                adapt_on_names=statement_container._adapt_on_names,
             )
 
         return self
@@ -763,6 +846,13 @@ class ORMFromStatementCompileState(ORMCompileState):
             "plugin_subject", None
         )
         adapter = DMLReturningColFilter(target_mapper, dml_mapper)
+
+        if self.compile_options._is_star and (len(self._entities) != 1):
+            raise sa_exc.CompileError(
+                "Can't generate ORM query that includes multiple expressions "
+                "at the same time as '*'; query for '*' alone if present"
+            )
+
         for entity in self._entities:
             entity.setup_dml_returning_compile_state(self, adapter)
 
@@ -787,6 +877,8 @@ class FromStatement(GroupedElement, Generative, TypedReturnsRows[_TP]):
 
     element: Union[ExecutableReturnsRows, TextClause]
 
+    _adapt_on_names: bool
+
     _traverse_internals = [
         ("_raw_columns", InternalTraversal.dp_clauseelement_list),
         ("element", InternalTraversal.dp_clauseelement),
@@ -800,6 +892,7 @@ class FromStatement(GroupedElement, Generative, TypedReturnsRows[_TP]):
         self,
         entities: Iterable[_ColumnsClauseArgument[Any]],
         element: Union[ExecutableReturnsRows, TextClause],
+        _adapt_on_names: bool = True,
     ):
         self._raw_columns = [
             coercions.expect(
@@ -815,9 +908,9 @@ class FromStatement(GroupedElement, Generative, TypedReturnsRows[_TP]):
         self._label_style = (
             element._label_style if is_select_base(element) else None
         )
+        self._adapt_on_names = _adapt_on_names
 
     def _compiler_dispatch(self, compiler, **kw):
-
         """provide a fixed _compiler_dispatch method.
 
         This is roughly similar to using the sqlalchemy.ext.compiler
@@ -878,6 +971,13 @@ class FromStatement(GroupedElement, Generative, TypedReturnsRows[_TP]):
         return self.element._inline if is_insert_update(self.element) else None
 
 
+@sql.base.CompileState.plugin_for("orm", "compound_select")
+class CompoundSelectCompileState(
+    AutoflushOnlyORMCompileState, CompoundSelectState
+):
+    pass
+
+
 @sql.base.CompileState.plugin_for("orm", "select")
 class ORMSelectCompileState(ORMCompileState, SelectState):
     _already_joined_edges = ()
@@ -910,10 +1010,8 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
 
         if compiler is not None:
             toplevel = not compiler.stack
-            self.global_attributes = compiler._global_attributes
         else:
             toplevel = True
-            self.global_attributes = {}
 
         select_statement = statement
 
@@ -1001,12 +1099,17 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
 
         self.eager_order_by = ()
 
+        self._init_global_attributes(
+            select_statement,
+            compiler,
+            toplevel=toplevel,
+            process_criteria_for_toplevel=False,
+        )
+
         if toplevel and (
             select_statement._with_options
             or select_statement._memoized_select_entities
         ):
-            self.attributes = {}
-
             for (
                 memoized_entities
             ) in select_statement._memoized_select_entities:
@@ -1026,9 +1129,6 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
             for opt in self.select_statement._with_options:
                 if opt._is_compile_state:
                     opt.process_compile_state(self)
-
-        else:
-            self.attributes = {}
 
         # uncomment to print out the context.attributes structure
         # after it's been set up above
@@ -1279,7 +1379,6 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
 
     @classmethod
     def from_statement(cls, statement, from_statement):
-
         from_statement = coercions.expect(
             roles.ReturnsRowsRole,
             from_statement,
@@ -1479,7 +1578,6 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
         return statement
 
     def _simple_statement(self):
-
         statement = self._select_statement(
             self.primary_columns + self.secondary_columns,
             tuple(self.from_clauses) + tuple(self.eager_joins.values()),
@@ -1521,8 +1619,9 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
         prefixes,
         suffixes,
         group_by,
+        independent_ctes,
+        independent_ctes_opts,
     ):
-
         statement = Select._create_raw_select(
             _raw_columns=raw_columns,
             _from_obj=from_obj,
@@ -1549,6 +1648,8 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
         statement._offset_clause = offset_clause
         statement._fetch_clause = fetch_clause
         statement._fetch_clause_options = fetch_clause_options
+        statement._independent_ctes = independent_ctes
+        statement._independent_ctes_opts = independent_ctes_opts
 
         if prefixes:
             statement._prefixes = prefixes
@@ -1598,7 +1699,6 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
             return cols
 
     def _get_current_adapter(self):
-
         adapters = []
 
         if self._from_obj_alias:
@@ -1647,7 +1747,7 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
         return _adapt_clause
 
     def _join(self, args, entities_collection):
-        for (right, onclause, from_, flags) in args:
+        for right, onclause, from_, flags in args:
             isouter = flags["isouter"]
             full = flags["full"]
 
@@ -2072,7 +2172,6 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
 
         # test for joining to an unmapped selectable as the target
         if r_info.is_clause_element:
-
             if prop:
                 right_mapper = prop.mapper
 
@@ -2216,6 +2315,10 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
             "fetch_clause_options": (
                 self.select_statement._fetch_clause_options
             ),
+            "independent_ctes": self.select_statement._independent_ctes,
+            "independent_ctes_opts": (
+                self.select_statement._independent_ctes_opts
+            ),
         }
 
     @property
@@ -2271,7 +2374,6 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
                 )
                 and ext_info not in self.extra_criteria_entities
             ):
-
                 self.extra_criteria_entities[ext_info] = (
                     ext_info,
                     ext_info._adapter if ext_info.is_aliased_class else None,
@@ -2279,7 +2381,7 @@ class ORMSelectCompileState(ORMCompileState, SelectState):
 
         search = set(self.extra_criteria_entities.values())
 
-        for (ext_info, adapter) in search:
+        for ext_info, adapter in search:
             if ext_info in self._join_entities:
                 continue
 
@@ -2416,7 +2518,6 @@ class _QueryEntity:
     def to_compile_state(
         cls, compile_state, entities, entities_collection, is_current_entities
     ):
-
         for idx, entity in enumerate(entities):
             if entity._is_lambda_element:
                 if entity._is_sequence:
@@ -2556,7 +2657,6 @@ class _MapperEntity(_QueryEntity):
         return _entity_corresponds_to(self.entity_zero, entity)
 
     def _get_entity_clauses(self, compile_state):
-
         adapter = None
 
         if not self.is_aliased_class:
@@ -2653,7 +2753,6 @@ class _MapperEntity(_QueryEntity):
 
 
 class _BundleEntity(_QueryEntity):
-
     _extra_entities = ()
 
     __slots__ = (
@@ -2885,7 +2984,6 @@ class _ColumnEntity(_QueryEntity):
             column = compile_state.compound_eager_adapter.columns[column]
 
         getter = result._getter(column)
-
         ret = getter, self._label_name, self._extra_entities
         self._row_processor = ret
 
@@ -2946,6 +3044,13 @@ class _RawColumnEntity(_ColumnEntity):
 
     def corresponds_to(self, entity):
         return False
+
+    def setup_dml_returning_compile_state(
+        self,
+        compile_state: ORMCompileState,
+        adapter: DMLReturningColFilter,
+    ) -> None:
+        return self.setup_compile_state(compile_state)
 
     def setup_compile_state(self, compile_state):
         current_adapter = compile_state._get_current_adapter()
@@ -3084,7 +3189,6 @@ class _ORMColumnEntity(_ColumnEntity):
             or ("additional_entity_criteria", self.mapper)
             in compile_state.global_attributes
         ):
-
             compile_state.extra_criteria_entities[ezero] = (
                 ezero,
                 ezero._adapter if ezero.is_aliased_class else None,

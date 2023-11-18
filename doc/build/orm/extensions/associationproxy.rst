@@ -8,9 +8,10 @@ Association Proxy
 ``associationproxy`` is used to create a read/write view of a
 target attribute across a relationship.  It essentially conceals
 the usage of a "middle" attribute between two endpoints, and
-can be used to cherry-pick fields from a collection of
-related objects or to reduce the verbosity of using the association
-object pattern.   Applied creatively, the association proxy allows
+can be used to cherry-pick fields from both a collection of
+related objects or scalar relationship. or to reduce the verbosity
+of using the association object pattern.
+Applied creatively, the association proxy allows
 the construction of sophisticated collections and dictionary
 views of virtually any geometry, persisted to the database using
 standard, transparently configured relational patterns.
@@ -30,6 +31,7 @@ exception of an extra attribute added to the ``User`` class called
     from __future__ import annotations
 
     from typing import Final
+    from typing import List
 
     from sqlalchemy import Column
     from sqlalchemy import ForeignKey
@@ -52,13 +54,13 @@ exception of an extra attribute added to the ``User`` class called
         __tablename__ = "user"
         id: Mapped[int] = mapped_column(primary_key=True)
         name: Mapped[str] = mapped_column(String(64))
-        kw: Mapped[list[Keyword]] = relationship(secondary=lambda: user_keyword_table)
+        kw: Mapped[List[Keyword]] = relationship(secondary=lambda: user_keyword_table)
 
         def __init__(self, name: str):
             self.name = name
 
         # proxy the 'keyword' attribute from the 'kw' relationship
-        keywords: AssociationProxy[list[str]] = association_proxy("kw", "keyword")
+        keywords: AssociationProxy[List[str]] = association_proxy("kw", "keyword")
 
 
     class Keyword(Base):
@@ -124,7 +126,7 @@ the underlying collection or attribute does.
 .. _associationproxy_creator:
 
 Creation of New Values
-----------------------
+^^^^^^^^^^^^^^^^^^^^^^
 
 When a list ``append()`` event (or set ``add()``, dictionary ``__setitem__()``,
 or scalar assignment event) is intercepted by the association proxy, it
@@ -150,7 +152,7 @@ using a lambda as is typical::
         ...
 
         # use Keyword(keyword=kw) on append() events
-        keywords: AssociationProxy[list[str]] = association_proxy(
+        keywords: AssociationProxy[List[str]] = association_proxy(
             "kw", "keyword", creator=lambda kw: Keyword(keyword=kw)
         )
 
@@ -181,6 +183,7 @@ collection of ``User`` to the ``.keyword`` attribute present on each
 
     from __future__ import annotations
 
+    from typing import List
     from typing import Optional
 
     from sqlalchemy import ForeignKey
@@ -203,17 +206,17 @@ collection of ``User`` to the ``.keyword`` attribute present on each
         id: Mapped[int] = mapped_column(primary_key=True)
         name: Mapped[str] = mapped_column(String(64))
 
-        user_keyword_associations: Mapped[list[UserKeywordAssociation]] = relationship(
+        user_keyword_associations: Mapped[List[UserKeywordAssociation]] = relationship(
             back_populates="user",
             cascade="all, delete-orphan",
         )
 
         # association proxy of "user_keyword_associations" collection
         # to "keyword" attribute
-        keywords: AssociationProxy[list[Keyword]] = association_proxy(
+        keywords: AssociationProxy[List[Keyword]] = association_proxy(
             "user_keyword_associations",
             "keyword",
-            creator=lambda keyword: UserKeywordAssociation(keyword=Keyword(keyword)),
+            creator=lambda keyword_obj: UserKeywordAssociation(keyword=keyword_obj),
         )
 
         def __init__(self, name: str):
@@ -315,6 +318,7 @@ argument to the ``User.keywords`` proxy so that these values are assigned approp
 when new elements are added to the dictionary::
 
     from __future__ import annotations
+    from typing import Dict
 
     from sqlalchemy import ForeignKey
     from sqlalchemy import String
@@ -338,7 +342,7 @@ when new elements are added to the dictionary::
 
         # user/user_keyword_associations relationship, mapping
         # user_keyword_associations with a dictionary against "special_key" as key.
-        user_keyword_associations: Mapped[dict[str, UserKeywordAssociation]] = relationship(
+        user_keyword_associations: Mapped[Dict[str, UserKeywordAssociation]] = relationship(
             back_populates="user",
             collection_class=attribute_keyed_dict("special_key"),
             cascade="all, delete-orphan",
@@ -346,7 +350,7 @@ when new elements are added to the dictionary::
         # proxy to 'user_keyword_associations', instantiating
         # UserKeywordAssociation assigning the new key to 'special_key',
         # values to 'keyword'.
-        keywords: AssociationProxy[dict[str, Keyword]] = association_proxy(
+        keywords: AssociationProxy[Dict[str, Keyword]] = association_proxy(
             "user_keyword_associations",
             "keyword",
             creator=lambda k, v: UserKeywordAssociation(special_key=k, keyword=v),
@@ -426,14 +430,14 @@ present on ``UserKeywordAssociation``::
         id: Mapped[int] = mapped_column(primary_key=True)
         name: Mapped[str] = mapped_column(String(64))
 
-        user_keyword_associations: Mapped[dict[str, UserKeywordAssociation]] = relationship(
+        user_keyword_associations: Mapped[Dict[str, UserKeywordAssociation]] = relationship(
             back_populates="user",
             collection_class=attribute_keyed_dict("special_key"),
             cascade="all, delete-orphan",
         )
         # the same 'user_keyword_associations'->'keyword' proxy as in
         # the basic dictionary example.
-        keywords: AssociationProxy[dict[str, str]] = association_proxy(
+        keywords: AssociationProxy[Dict[str, str]] = association_proxy(
             "user_keyword_associations",
             "keyword",
             creator=lambda k, v: UserKeywordAssociation(special_key=k, keyword=v),
@@ -458,7 +462,7 @@ present on ``UserKeywordAssociation``::
 
         # 'keyword' is changed to be a proxy to the
         # 'keyword' attribute of 'Keyword'
-        keyword: AssociationProxy[dict[str, str]] = association_proxy("kw", "keyword")
+        keyword: AssociationProxy[Dict[str, str]] = association_proxy("kw", "keyword")
 
 
     class Keyword(Base):
@@ -547,7 +551,7 @@ to a related object, as in the example mapping below::
         )
 
         # column-targeted association proxy
-        special_keys: AssociationProxy[list[str]] = association_proxy(
+        special_keys: AssociationProxy[List[str]] = association_proxy(
             "user_keyword_associations", "special_key"
         )
 
@@ -686,6 +690,72 @@ deleted depends on the relationship cascade setting.
 .. seealso::
 
     :ref:`unitofwork_cascades`
+
+Scalar Relationships
+--------------------
+
+The example below illustrates the use of the association proxy on the many
+side of of a one-to-many relationship, accessing attributes of a scalar
+object::
+
+    from __future__ import annotations
+
+    from typing import List
+
+    from sqlalchemy import ForeignKey
+    from sqlalchemy import String
+    from sqlalchemy.ext.associationproxy import association_proxy
+    from sqlalchemy.ext.associationproxy import AssociationProxy
+    from sqlalchemy.orm import DeclarativeBase
+    from sqlalchemy.orm import Mapped
+    from sqlalchemy.orm import mapped_column
+    from sqlalchemy.orm import relationship
+
+
+    class Base(DeclarativeBase):
+        pass
+
+
+    class Recipe(Base):
+        __tablename__ = "recipe"
+        id: Mapped[int] = mapped_column(primary_key=True)
+        name: Mapped[str] = mapped_column(String(64))
+
+        steps: Mapped[List[Step]] = relationship(back_populates="recipe")
+        step_descriptions: AssociationProxy[List[str]] = association_proxy(
+            "steps", "description"
+        )
+
+
+    class Step(Base):
+        __tablename__ = "step"
+        id: Mapped[int] = mapped_column(primary_key=True)
+        description: Mapped[str]
+        recipe_id: Mapped[int] = mapped_column(ForeignKey("recipe.id"))
+        recipe: Mapped[Recipe] = relationship(back_populates="steps")
+
+        recipe_name: AssociationProxy[str] = association_proxy("recipe", "name")
+
+        def __init__(self, description: str) -> None:
+            self.description = description
+
+
+    my_snack = Recipe(
+        name="afternoon snack",
+        step_descriptions=[
+            "slice bread",
+            "spread peanut butted",
+            "eat sandwich",
+        ],
+    )
+
+A summary of the steps of ``my_snack`` can be printed using::
+
+    >>> for i, step in enumerate(my_snack.steps, 1):
+    ...     print(f"Step {i} of {step.recipe_name!r}: {step.description}")
+    Step 1 of 'afternoon snack': slice bread
+    Step 2 of 'afternoon snack': spread peanut butted
+    Step 3 of 'afternoon snack': eat sandwich
 
 API Documentation
 -----------------

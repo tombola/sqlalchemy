@@ -20,12 +20,12 @@ from sqlalchemy import String
 from sqlalchemy import Table
 from sqlalchemy import testing
 from sqlalchemy import text
+from sqlalchemy import try_cast
 from sqlalchemy import union
 from sqlalchemy import UniqueConstraint
 from sqlalchemy import update
 from sqlalchemy.dialects import mssql
 from sqlalchemy.dialects.mssql import base as mssql_base
-from sqlalchemy.dialects.mssql.base import try_cast
 from sqlalchemy.sql import column
 from sqlalchemy.sql import quoted_name
 from sqlalchemy.sql import table
@@ -484,6 +484,74 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
             "myid FROM mytable ORDER BY mytable.myid) AS foo, mytable WHERE "
             "foo.myid = mytable.myid",
         )
+
+    @testing.variation("style", ["plain", "ties", "percent"])
+    def test_noorderby_insubquery_fetch(self, style):
+        """test "no ORDER BY in subqueries unless TOP / LIMIT / OFFSET"
+        present; test issue #10458"""
+
+        table1 = table(
+            "mytable",
+            column("myid", Integer),
+            column("name", String),
+            column("description", String),
+        )
+
+        if style.plain:
+            q = (
+                select(table1.c.myid)
+                .order_by(table1.c.myid)
+                .fetch(count=10)
+                .alias("foo")
+            )
+        elif style.ties:
+            q = (
+                select(table1.c.myid)
+                .order_by(table1.c.myid)
+                .fetch(count=10, with_ties=True)
+                .alias("foo")
+            )
+        elif style.percent:
+            q = (
+                select(table1.c.myid)
+                .order_by(table1.c.myid)
+                .fetch(count=10, percent=True)
+                .alias("foo")
+            )
+        else:
+            style.fail()
+
+        crit = q.c.myid == table1.c.myid
+
+        if style.plain:
+            # the "plain" style of fetch doesnt use TOP right now, so
+            # there's an order_by implicit in the row_number part of it
+            self.assert_compile(
+                select("*").where(crit),
+                "SELECT * FROM (SELECT anon_1.myid AS myid FROM "
+                "(SELECT mytable.myid AS myid, ROW_NUMBER() OVER "
+                "(ORDER BY mytable.myid) AS mssql_rn FROM mytable) AS anon_1 "
+                "WHERE mssql_rn <= :param_1) AS foo, mytable "
+                "WHERE foo.myid = mytable.myid",
+            )
+        elif style.ties:
+            # issue #10458 is that when TIES/PERCENT were used, and it just
+            # generates TOP, ORDER BY would be omitted.
+            self.assert_compile(
+                select("*").where(crit),
+                "SELECT * FROM (SELECT TOP __[POSTCOMPILE_param_1] WITH "
+                "TIES mytable.myid AS myid FROM mytable "
+                "ORDER BY mytable.myid) AS foo, mytable "
+                "WHERE foo.myid = mytable.myid",
+            )
+        elif style.percent:
+            self.assert_compile(
+                select("*").where(crit),
+                "SELECT * FROM (SELECT TOP __[POSTCOMPILE_param_1] "
+                "PERCENT mytable.myid AS myid FROM mytable "
+                "ORDER BY mytable.myid) AS foo, mytable "
+                "WHERE foo.myid = mytable.myid",
+            )
 
     @testing.combinations(10, 0)
     def test_noorderby_insubquery_offset_oldstyle(self, offset):
@@ -1375,6 +1443,42 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
             schema.CreateIndex(idx), "CREATE CLUSTERED INDEX foo ON test (id)"
         )
 
+    def test_index_empty(self):
+        metadata = MetaData()
+        idx = Index("foo")
+        Table("test", metadata, Column("id", Integer)).append_constraint(idx)
+        self.assert_compile(
+            schema.CreateIndex(idx), "CREATE INDEX foo ON test"
+        )
+
+    def test_index_colstore_clustering(self):
+        metadata = MetaData()
+        idx = Index("foo", mssql_clustered=True, mssql_columnstore=True)
+        Table("test", metadata, Column("id", Integer)).append_constraint(idx)
+        self.assert_compile(
+            schema.CreateIndex(idx),
+            "CREATE CLUSTERED COLUMNSTORE INDEX foo ON test",
+        )
+
+    def test_index_colstore_no_clustering(self):
+        metadata = MetaData()
+        tbl = Table("test", metadata, Column("id", Integer))
+        idx = Index(
+            "foo", tbl.c.id, mssql_clustered=False, mssql_columnstore=True
+        )
+        self.assert_compile(
+            schema.CreateIndex(idx),
+            "CREATE NONCLUSTERED COLUMNSTORE INDEX foo ON test (id)",
+        )
+
+    def test_index_not_colstore_clustering(self):
+        metadata = MetaData()
+        idx = Index("foo", mssql_clustered=True, mssql_columnstore=False)
+        Table("test", metadata, Column("id", Integer)).append_constraint(idx)
+        self.assert_compile(
+            schema.CreateIndex(idx), "CREATE CLUSTERED INDEX foo ON test"
+        )
+
     def test_index_where(self):
         metadata = MetaData()
         tbl = Table("test", metadata, Column("data", Integer))
@@ -1473,12 +1577,17 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
             "CREATE INDEX foo ON test (x) INCLUDE (y) WHERE y > 1",
         )
 
-    def test_try_cast(self):
-        metadata = MetaData()
-        t1 = Table("t1", metadata, Column("id", Integer, primary_key=True))
+    @testing.variation("use_mssql_version", [True, False])
+    def test_try_cast(self, use_mssql_version):
+        t1 = Table("t1", MetaData(), Column("id", Integer, primary_key=True))
+
+        if use_mssql_version:
+            stmt = select(mssql.try_cast(t1.c.id, Integer))
+        else:
+            stmt = select(try_cast(t1.c.id, Integer))
 
         self.assert_compile(
-            select(try_cast(t1.c.id, Integer)),
+            stmt,
             "SELECT TRY_CAST (t1.id AS INTEGER) AS id FROM t1",
         )
 

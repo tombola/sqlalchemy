@@ -132,7 +132,7 @@ class _ConnDialect:
     def do_close(self, dbapi_connection: DBAPIConnection) -> None:
         dbapi_connection.close()
 
-    def do_ping(self, dbapi_connection: DBAPIConnection) -> bool:
+    def _do_ping_w_event(self, dbapi_connection: DBAPIConnection) -> bool:
         raise NotImplementedError(
             "The ping feature requires that a dialect is "
             "passed to the connection pool."
@@ -266,9 +266,6 @@ class Pool(log.Identified, event.EventTarget):
          make use of :func:`_sa.create_engine` should not use this parameter
          as it is handled by the engine creation strategy.
 
-         .. versionadded:: 1.1 - ``dialect`` is now a public parameter
-            to the :class:`_pool.Pool`.
-
         :param pre_ping: if True, the pool will emit a "ping" (typically
          "SELECT 1", but is dialect-specific) on the connection
          upon checkout, to test if the connection is alive or not.   If not,
@@ -326,13 +323,13 @@ class Pool(log.Identified, event.EventTarget):
 
         # mypy seems to get super confused assigning functions to
         # attributes
-        self._invoke_creator = self._should_wrap_creator(creator)  # type: ignore  # noqa: E501
+        self._invoke_creator = self._should_wrap_creator(creator)
 
     @_creator.deleter
     def _creator(self) -> None:
         # needed for mock testing
         del self._creator_arg
-        del self._invoke_creator  # type: ignore[misc]
+        del self._invoke_creator
 
     def _should_wrap_creator(
         self, creator: Union[_CreatorFnType, _CreatorWRecFnType]
@@ -382,7 +379,10 @@ class Pool(log.Identified, event.EventTarget):
                 self._dialect.do_close(connection)
         except BaseException as e:
             self.logger.error(
-                "Exception closing connection %r", connection, exc_info=True
+                f"Exception {'terminating' if terminate else 'closing'} "
+                f"connection %r",
+                connection,
+                exc_info=True,
             )
             if not isinstance(e, Exception):
                 raise
@@ -835,7 +835,7 @@ class _ConnectionRecord(ConnectionPoolEntry):
         # time and invalidation for the logic below to work reliably.
 
         if self.dbapi_connection is None:
-            self.info.clear()  # type: ignore  # our info is always present
+            self.info.clear()
             self.__connect()
         elif (
             self.__pool._recycle > -1
@@ -863,7 +863,7 @@ class _ConnectionRecord(ConnectionPoolEntry):
 
         if recycle:
             self.__close(terminate=True)
-            self.info.clear()  # type: ignore  # our info is always present
+            self.info.clear()
 
             self.__connect()
 
@@ -941,27 +941,32 @@ def _finalize_fairy(
     if is_gc_cleanup:
         assert ref is not None
         _strong_ref_connection_records.pop(ref, None)
-    elif fairy:
-        _strong_ref_connection_records.pop(weakref.ref(fairy), None)
-
-    if is_gc_cleanup:
         assert connection_record is not None
         if connection_record.fairy_ref is not ref:
             return
         assert dbapi_connection is None
         dbapi_connection = connection_record.dbapi_connection
 
+    elif fairy:
+        _strong_ref_connection_records.pop(weakref.ref(fairy), None)
+
     # null pool is not _is_asyncio but can be used also with async dialects
-    dont_restore_gced = (
-        pool._dialect.is_async and not pool._dialect.has_terminate
-    )
+    dont_restore_gced = pool._dialect.is_async
 
     if dont_restore_gced:
         detach = connection_record is None or is_gc_cleanup
-        can_manipulate_connection = ref is None
+        can_manipulate_connection = not is_gc_cleanup
+        can_close_or_terminate_connection = (
+            not pool._dialect.is_async or pool._dialect.has_terminate
+        )
+        requires_terminate_for_close = (
+            pool._dialect.is_async and pool._dialect.has_terminate
+        )
+
     else:
         detach = connection_record is None
-        can_manipulate_connection = True
+        can_manipulate_connection = can_close_or_terminate_connection = True
+        requires_terminate_for_close = False
 
     if dbapi_connection is not None:
         if connection_record and echo:
@@ -992,25 +997,14 @@ def _finalize_fairy(
                     fairy._pool = pool
                     fairy.detach()
 
-                if can_manipulate_connection:
+                if can_close_or_terminate_connection:
                     if pool.dispatch.close_detached:
                         pool.dispatch.close_detached(dbapi_connection)
 
-                    pool._close_connection(dbapi_connection)
-                else:
-                    message = (
-                        "The garbage collector is trying to clean up "
-                        f"connection {dbapi_connection!r}. This feature is "
-                        "unsupported on asyncio "
-                        'dbapis that lack a "terminate" feature, since no '
-                        "IO can be performed at this stage to "
-                        "reset the connection. Please close out all "
-                        "connections when they are no longer used, calling "
-                        "``close()`` or using a context manager to "
-                        "manage their lifetime."
+                    pool._close_connection(
+                        dbapi_connection,
+                        terminate=requires_terminate_for_close,
                     )
-                    pool.logger.error(message)
-                    util.warn(message)
 
         except BaseException as e:
             pool.logger.error(
@@ -1020,6 +1014,24 @@ def _finalize_fairy(
                 connection_record.invalidate(e=e)
             if not isinstance(e, Exception):
                 raise
+        finally:
+            if detach and is_gc_cleanup and dont_restore_gced:
+                message = (
+                    "The garbage collector is trying to clean up "
+                    f"non-checked-in connection {dbapi_connection!r}, "
+                    f"""which will be {
+                        'dropped, as it cannot be safely terminated'
+                        if not can_close_or_terminate_connection
+                        else 'terminated'
+                    }.  """
+                    "Please ensure that SQLAlchemy pooled connections are "
+                    "returned to "
+                    "the pool explicitly, either by calling ``close()`` "
+                    "or by using appropriate context managers to manage "
+                    "their lifecycle."
+                )
+                pool.logger.error(message)
+                util.warn(message)
 
     if connection_record and connection_record.fairy_ref is not None:
         connection_record.checkin()
@@ -1028,7 +1040,9 @@ def _finalize_fairy(
     # test/engine/test_pool.py::PoolEventsTest::test_checkin_event_gc[True]
     # which actually started failing when pytest warnings plugin was
     # turned on, due to util.warn() above
-    fairy.dbapi_connection = fairy._connection_record = None  # type: ignore
+    if fairy is not None:
+        fairy.dbapi_connection = None  # type: ignore
+        fairy._connection_record = None
     del dbapi_connection
     del connection_record
     del fairy
@@ -1289,7 +1303,9 @@ class _ConnectionFairy(PoolProxiedConnection):
                                 "Pool pre-ping on connection %s",
                                 fairy.dbapi_connection,
                             )
-                        result = pool._dialect.do_ping(fairy.dbapi_connection)
+                        result = pool._dialect._do_ping_w_event(
+                            fairy.dbapi_connection
+                        )
                         if not result:
                             if fairy._echo:
                                 pool.logger.debug(
@@ -1457,7 +1473,6 @@ class _ConnectionFairy(PoolProxiedConnection):
     def invalidate(
         self, e: Optional[BaseException] = None, soft: bool = False
     ) -> None:
-
         if self.dbapi_connection is None:
             util.warn("Can't invalidate an already-closed connection.")
             return

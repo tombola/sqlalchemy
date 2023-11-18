@@ -11,6 +11,10 @@ import operator
 from typing import Any
 from typing import Callable
 from typing import Dict
+from typing import Mapping
+from typing import NoReturn
+from typing import Optional
+from typing import overload
 from typing import Set
 from typing import Tuple
 from typing import Type
@@ -24,6 +28,7 @@ from .. import util
 from ..inspection import Inspectable
 from ..util.typing import Literal
 from ..util.typing import Protocol
+from ..util.typing import TypeAlias
 
 if TYPE_CHECKING:
     from datetime import date
@@ -40,7 +45,6 @@ if TYPE_CHECKING:
     from .dml import UpdateBase
     from .dml import ValuesBase
     from .elements import ClauseElement
-    from .elements import ColumnClause
     from .elements import ColumnElement
     from .elements import KeyedColumnElement
     from .elements import quoted_name
@@ -148,7 +152,6 @@ sets; select(...), insert().returning(...), etc.
 _TypedColumnClauseArgument = Union[
     roles.TypedColumnsClauseRole[_T],
     "SQLCoreOperations[_T]",
-    roles.ExpressionElementRole[_T],
     Type[_T],
 ]
 
@@ -174,18 +177,22 @@ _ColumnExpressionArgument = Union[
     Callable[[], "ColumnElement[_T]"],
     "LambdaElement",
 ]
-"""narrower "column expression" argument.
+"See docs in public alias ColumnExpressionArgument."
+
+ColumnExpressionArgument: TypeAlias = _ColumnExpressionArgument[_T]
+"""Narrower "column expression" argument.
 
 This type is used for all the other "column" kinds of expressions that
 typically represent a single SQL column expression, not a set of columns the
 way a table or ORM entity does.
 
 This includes ColumnElement, or ORM-mapped attributes that will have a
-`__clause_element__()` method, it also has the ExpressionElementRole
+``__clause_element__()`` method, it also has the ExpressionElementRole
 overall which brings in the TextClause object also.
 
-"""
+.. versionadded:: 2.0.13
 
+"""
 
 _ColumnExpressionOrLiteralArgument = Union[Any, _ColumnExpressionArgument[_T]]
 
@@ -225,7 +232,10 @@ _SelectStatementForCompoundArgument = Union[
 """SELECT statement acceptable by ``union()`` and other SQL set operations"""
 
 _DMLColumnArgument = Union[
-    str, "ColumnClause[Any]", _HasClauseElement, roles.DMLColumnRole
+    str,
+    _HasClauseElement,
+    roles.DMLColumnRole,
+    "SQLCoreOperations[Any]",
 ]
 """A DML column expression.  This is a "key" inside of insert().values(),
 update().values(), and related.
@@ -236,6 +246,9 @@ There's also edge cases like JSON expression assignment, which we would want
 the DMLColumnRole to be able to accommodate.
 
 """
+
+_DMLKey = TypeVar("_DMLKey", bound=_DMLColumnArgument)
+_DMLColumnKeyMapping = Mapping[_DMLKey, Any]
 
 
 _DDLColumnArgument = Union[str, "Column[Any]", roles.DDLConstraintColumnRole]
@@ -260,6 +273,10 @@ _PropagateAttrsType = util.immutabledict[str, Any]
 _TypeEngineArgument = Union[Type["TypeEngine[_T]"], "TypeEngine[_T]"]
 
 _EquivalentColumnMap = Dict["ColumnElement[Any]", Set["ColumnElement[Any]"]]
+
+_LimitOffsetType = Union[int, _ColumnExpressionArgument[int], None]
+
+_AutoIncrementType = Union[bool, Literal["auto", "ignore_fk"]]
 
 if TYPE_CHECKING:
 
@@ -315,7 +332,6 @@ if TYPE_CHECKING:
         ...
 
 else:
-
     is_sql_compiler = operator.attrgetter("is_sql")
     is_ddl_compiler = operator.attrgetter("is_ddl")
     is_named_from_clause = operator.attrgetter("named_with_column")
@@ -354,3 +370,87 @@ def _no_kw() -> exc.ArgumentError:
         "Additional keyword arguments are not accepted by this "
         "function/method.  The presence of **kw is for pep-484 typing purposes"
     )
+
+
+def _unexpected_kw(methname: str, kw: Dict[str, Any]) -> NoReturn:
+    k = list(kw)[0]
+    raise TypeError(f"{methname} got an unexpected keyword argument '{k}'")
+
+
+@overload
+def Nullable(
+    val: "SQLCoreOperations[_T]",
+) -> "SQLCoreOperations[Optional[_T]]":
+    ...
+
+
+@overload
+def Nullable(
+    val: roles.ExpressionElementRole[_T],
+) -> roles.ExpressionElementRole[Optional[_T]]:
+    ...
+
+
+@overload
+def Nullable(val: Type[_T]) -> Type[Optional[_T]]:
+    ...
+
+
+def Nullable(
+    val: _TypedColumnClauseArgument[_T],
+) -> _TypedColumnClauseArgument[Optional[_T]]:
+    """Types a column or ORM class as nullable.
+
+    This can be used in select and other contexts to express that the value of
+    a column can be null, for example due to an outer join::
+
+        stmt1 = select(A, Nullable(B)).outerjoin(A.bs)
+        stmt2 = select(A.data, Nullable(B.data)).outerjoin(A.bs)
+
+    At runtime this method returns the input unchanged.
+
+    .. versionadded:: 2.0.20
+    """
+    return val
+
+
+@overload
+def NotNullable(
+    val: "SQLCoreOperations[Optional[_T]]",
+) -> "SQLCoreOperations[_T]":
+    ...
+
+
+@overload
+def NotNullable(
+    val: roles.ExpressionElementRole[Optional[_T]],
+) -> roles.ExpressionElementRole[_T]:
+    ...
+
+
+@overload
+def NotNullable(val: Type[Optional[_T]]) -> Type[_T]:
+    ...
+
+
+@overload
+def NotNullable(val: Optional[Type[_T]]) -> Type[_T]:
+    ...
+
+
+def NotNullable(
+    val: Union[_TypedColumnClauseArgument[Optional[_T]], Optional[Type[_T]]],
+) -> _TypedColumnClauseArgument[_T]:
+    """Types a column or ORM class as not nullable.
+
+    This can be used in select and other contexts to express that the value of
+    a column cannot be null, for example due to a where condition on a
+    nullable column::
+
+        stmt = select(NotNullable(A.value)).where(A.value.is_not(None))
+
+    At runtime this method returns the input unchanged.
+
+    .. versionadded:: 2.0.20
+    """
+    return val  # type: ignore

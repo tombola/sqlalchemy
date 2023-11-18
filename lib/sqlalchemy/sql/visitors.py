@@ -146,7 +146,7 @@ class Visitable:
             cls._original_compiler_dispatch
         ) = _compiler_dispatch
 
-    def __class_getitem__(cls, key: str) -> Any:
+    def __class_getitem__(cls, key: Any) -> Any:
         # allow generic classes in py3.9+
         return cls
 
@@ -161,16 +161,17 @@ class InternalTraversal(Enum):
     the ``_traverse_internals`` collection.   Such as, the :class:`.Case`
     object defines ``_traverse_internals`` as ::
 
-        _traverse_internals = [
-            ("value", InternalTraversal.dp_clauseelement),
-            ("whens", InternalTraversal.dp_clauseelement_tuples),
-            ("else_", InternalTraversal.dp_clauseelement),
-        ]
+        class Case(ColumnElement[_T]):
+            _traverse_internals = [
+                ("value", InternalTraversal.dp_clauseelement),
+                ("whens", InternalTraversal.dp_clauseelement_tuples),
+                ("else_", InternalTraversal.dp_clauseelement),
+            ]
 
     Above, the :class:`.Case` class indicates its internal state as the
     attributes named ``value``, ``whens``, and ``else_``.    They each
     link to an :class:`.InternalTraversal` method which indicates the type
-    of datastructure referred towards.
+    of datastructure to which each attribute refers.
 
     Using the ``_traverse_internals`` structure, objects of type
     :class:`.InternalTraversible` will have the following methods automatically
@@ -594,11 +595,6 @@ _dispatch_lookup = HasTraversalDispatch._dispatch_lookup
 _generate_traversal_dispatch()
 
 
-SelfExternallyTraversible = TypeVar(
-    "SelfExternallyTraversible", bound="ExternallyTraversible"
-)
-
-
 class ExternallyTraversible(HasTraverseInternals, Visitable):
     __slots__ = ()
 
@@ -606,9 +602,7 @@ class ExternallyTraversible(HasTraverseInternals, Visitable):
 
     if typing.TYPE_CHECKING:
 
-        def _annotate(
-            self: SelfExternallyTraversible, values: _AnnotationDict
-        ) -> SelfExternallyTraversible:
+        def _annotate(self, values: _AnnotationDict) -> Self:
             ...
 
         def get_children(
@@ -616,7 +610,7 @@ class ExternallyTraversible(HasTraverseInternals, Visitable):
         ) -> Iterable[ExternallyTraversible]:
             ...
 
-    def _clone(self: Self, **kw: Any) -> Self:
+    def _clone(self, **kw: Any) -> Self:
         """clone this element"""
         raise NotImplementedError()
 
@@ -1056,7 +1050,6 @@ def cloned_traverse(
             return elem
         else:
             if id(elem) not in cloned:
-
                 if "replace" in kw:
                     newelem = cast(
                         Optional[ExternallyTraversible], kw["replace"](elem)

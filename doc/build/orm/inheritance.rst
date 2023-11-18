@@ -130,7 +130,7 @@ subclasses introduce a second identity are not supported.
 The ORM uses the value set up by :paramref:`_orm.Mapper.polymorphic_identity` in
 order to determine which class a row belongs towards when loading rows
 polymorphically.  In the example above, every row which represents an
-``Employee`` will have the value ``'employee'`` in its ``type`` row; similarly,
+``Employee`` will have the value ``'employee'`` in its ``type`` column; similarly,
 every ``Engineer`` will get the value ``'engineer'``, and each ``Manager`` will
 get the value ``'manager'``. Regardless of whether the inheritance mapping uses
 distinct joined tables for subclasses as in joined table inheritance, or all
@@ -186,7 +186,7 @@ and ``Employee``::
         __tablename__ = "company"
         id: Mapped[int] = mapped_column(primary_key=True)
         name: Mapped[str]
-        employees: Mapped[list[Employee]] = relationship(back_populates="company")
+        employees: Mapped[List[Employee]] = relationship(back_populates="company")
 
 
     class Employee(Base):
@@ -220,7 +220,7 @@ established between the ``Manager`` and ``Company`` classes::
         __tablename__ = "company"
         id: Mapped[int] = mapped_column(primary_key=True)
         name: Mapped[str]
-        managers: Mapped[list[Manager]] = relationship(back_populates="company")
+        managers: Mapped[List[Manager]] = relationship(back_populates="company")
 
 
     class Employee(Base):
@@ -258,9 +258,8 @@ loads against a join of the ``employee`` and ``manager`` tables together.
 Loading Joined Inheritance Mappings
 +++++++++++++++++++++++++++++++++++
 
-See the sections :ref:`inheritance_loading_toplevel` and
-:ref:`loading_joined_inheritance` for background on inheritance
-loading techniques, including configuration of tables
+See the section :ref:`inheritance_loading_toplevel` for background
+on inheritance loading techniques, including configuration of tables
 to be queried both at mapper configuration time as well as query time.
 
 .. _single_inheritance:
@@ -425,7 +424,7 @@ parameter indicates to :func:`_orm.mapped_column` that it should look for the
 requested :class:`_schema.Column` on the mapped :class:`.Table` for
 ``Employee`` first, and if present, maintain that existing mapping.  If not
 present, :func:`_orm.mapped_column` will map the column normally, adding it
-as one of the columns in the :class:`.Table` referred towards by the
+as one of the columns in the :class:`.Table` referenced by the
 ``Employee`` superclass.
 
 
@@ -481,7 +480,7 @@ relationship::
         __tablename__ = "company"
         id: Mapped[int] = mapped_column(primary_key=True)
         name: Mapped[str]
-        employees: Mapped[list[Employee]] = relationship(back_populates="company")
+        employees: Mapped[List[Employee]] = relationship(back_populates="company")
 
 
     class Employee(Base):
@@ -522,7 +521,7 @@ or subclasses::
         __tablename__ = "company"
         id: Mapped[int] = mapped_column(primary_key=True)
         name: Mapped[str]
-        managers: Mapped[list[Manager]] = relationship(back_populates="company")
+        managers: Mapped[List[Manager]] = relationship(back_populates="company")
 
 
     class Employee(Base):

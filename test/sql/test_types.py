@@ -233,7 +233,6 @@ class AdaptTest(fixtures.TestBase):
 
     def _adaptions():
         for typ in _all_types(omit_special_types=True):
-
             # up adapt from LowerCase to UPPERCASE,
             # as well as to all non-sqltypes
             up_adaptions = [typ] + typ.__subclasses__()
@@ -1017,7 +1016,6 @@ class BindProcessorInsertValuesTest(UserDefinedRoundTripTest):
 class UserDefinedTest(
     _UserDefinedTypeFixture, fixtures.TablesTest, AssertsCompiledSQL
 ):
-
     run_create_tables = None
     run_inserts = None
     run_deletes = None
@@ -2725,6 +2723,12 @@ class EnumTest(AssertsCompiledSQL, fixtures.TablesTest):
         e = Enum("x", "y", "long", native_enum=False, length=42)
         eq_(e.length, 42)
 
+    def test_none_length_non_native(self):
+        e = Enum("x", "y", native_enum=False, length=None)
+        eq_(e.length, None)
+        eq_(repr(e), "Enum('x', 'y', native_enum=False, length=None)")
+        self.assert_compile(e, "VARCHAR", dialect="default")
+
     def test_omit_aliases(self, connection):
         table0 = self.tables["stdlib_enum_table"]
         type0 = table0.c.someenum.type
@@ -3926,7 +3930,6 @@ class NumericRawSQLTest(fixtures.TestBase):
 
 
 class IntervalTest(fixtures.TablesTest, AssertsExecutionResults):
-
     __backend__ = True
 
     @classmethod

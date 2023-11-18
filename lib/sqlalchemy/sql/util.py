@@ -54,6 +54,7 @@ from .elements import ColumnElement
 from .elements import Grouping
 from .elements import KeyedColumnElement
 from .elements import Label
+from .elements import NamedColumn
 from .elements import Null
 from .elements import UnaryExpression
 from .schema import Column
@@ -71,8 +72,8 @@ from ..util.typing import Literal
 from ..util.typing import Protocol
 
 if typing.TYPE_CHECKING:
-    from ._typing import _ColumnExpressionArgument
     from ._typing import _EquivalentColumnMap
+    from ._typing import _LimitOffsetType
     from ._typing import _TypeEngineArgument
     from .elements import BinaryExpression
     from .elements import TextClause
@@ -712,7 +713,6 @@ class _repr_params(_repr_base):
             return "(%s)" % elements
 
     def _get_batches(self, params: Iterable[Any]) -> Any:
-
         lparams = list(params)
         lenparams = len(lparams)
         if lenparams > self.max_params:
@@ -1122,7 +1122,6 @@ class ClauseAdapter(visitors.ReplacingExternalTraversal):
     def _corresponding_column(
         self, col, require_embedded, _seen=util.EMPTY_SET
     ):
-
         newcol = self.selectable.corresponding_column(
             col, require_embedded=require_embedded
         )
@@ -1135,7 +1134,12 @@ class ClauseAdapter(visitors.ReplacingExternalTraversal):
                 )
                 if newcol is not None:
                     return newcol
-        if self.adapt_on_names and newcol is None:
+
+        if (
+            self.adapt_on_names
+            and newcol is None
+            and isinstance(col, NamedColumn)
+        ):
             newcol = self.selectable.exported_columns.get(col.name)
         return newcol
 
@@ -1411,7 +1415,7 @@ class ColumnAdapter(ClauseAdapter):
 
 
 def _offset_or_limit_clause(
-    element: Union[int, _ColumnExpressionArgument[int]],
+    element: _LimitOffsetType,
     name: Optional[str] = None,
     type_: Optional[_TypeEngineArgument[int]] = None,
 ) -> ColumnElement[int]:
@@ -1427,8 +1431,8 @@ def _offset_or_limit_clause(
 
 
 def _offset_or_limit_clause_asint_if_possible(
-    clause: Optional[Union[int, _ColumnExpressionArgument[int]]]
-) -> Optional[Union[int, _ColumnExpressionArgument[int]]]:
+    clause: _LimitOffsetType,
+) -> _LimitOffsetType:
     """Return the offset or limit clause as a simple integer if possible,
     else return the clause.
 
@@ -1436,15 +1440,15 @@ def _offset_or_limit_clause_asint_if_possible(
     if clause is None:
         return None
     if hasattr(clause, "_limit_offset_value"):
-        value = clause._limit_offset_value  # type: ignore
+        value = clause._limit_offset_value
         return util.asint(value)
     else:
         return clause
 
 
 def _make_slice(
-    limit_clause: Optional[Union[int, _ColumnExpressionArgument[int]]],
-    offset_clause: Optional[Union[int, _ColumnExpressionArgument[int]]],
+    limit_clause: _LimitOffsetType,
+    offset_clause: _LimitOffsetType,
     start: int,
     stop: int,
 ) -> Tuple[Optional[ColumnElement[int]], Optional[ColumnElement[int]]]:
@@ -1485,13 +1489,11 @@ def _make_slice(
             offset_clause = 0
 
         if start != 0:
-            offset_clause = offset_clause + start  # type: ignore
+            offset_clause = offset_clause + start
 
         if offset_clause == 0:
             offset_clause = None
         else:
-            offset_clause = _offset_or_limit_clause(
-                offset_clause  # type: ignore
-            )
+            offset_clause = _offset_or_limit_clause(offset_clause)
 
-    return limit_clause, offset_clause  # type: ignore
+    return limit_clause, offset_clause

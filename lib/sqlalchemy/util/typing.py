@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import builtins
 import re
 import sys
 import typing
@@ -18,9 +19,12 @@ from typing import Dict
 from typing import ForwardRef
 from typing import Generic
 from typing import Iterable
+from typing import Mapping
+from typing import NewType
 from typing import NoReturn
 from typing import Optional
 from typing import overload
+from typing import Set
 from typing import Tuple
 from typing import Type
 from typing import TYPE_CHECKING
@@ -47,6 +51,7 @@ if True:  # zimports removes the tailing comments
     from typing_extensions import TypeAlias as TypeAlias  # 3.10
     from typing_extensions import TypedDict as TypedDict  # 3.8
     from typing_extensions import TypeGuard as TypeGuard  # 3.10
+    from typing_extensions import Self as Self  # 3.11
 
 
 _T = TypeVar("_T", bound=Any)
@@ -56,7 +61,6 @@ _KT_contra = TypeVar("_KT_contra", contravariant=True)
 _VT = TypeVar("_VT")
 _VT_co = TypeVar("_VT_co", covariant=True)
 
-Self = TypeVar("Self", bound=Any)
 
 if compat.py310:
     # why they took until py310 to put this in stdlib is beyond me,
@@ -71,10 +75,9 @@ typing_get_args = get_args
 typing_get_origin = get_origin
 
 
-# copied from TypeShed, required in order to implement
-# MutableMapping.update()
-
-_AnnotationScanType = Union[Type[Any], str, ForwardRef, "GenericProtocol[Any]"]
+_AnnotationScanType = Union[
+    Type[Any], str, ForwardRef, NewType, "GenericProtocol[Any]"
+]
 
 
 class ArgsTypeProcotol(Protocol):
@@ -105,6 +108,8 @@ class GenericProtocol(Protocol[_T]):
     #     ...
 
 
+# copied from TypeShed, required in order to implement
+# MutableMapping.update()
 class SupportsKeysAndGetItem(Protocol[_KT, _VT_co]):
     def keys(self) -> Iterable[_KT]:
         ...
@@ -121,8 +126,11 @@ def de_stringify_annotation(
     cls: Type[Any],
     annotation: _AnnotationScanType,
     originating_module: str,
+    locals_: Mapping[str, Any],
+    *,
     str_cleanup_fn: Optional[Callable[[str, str], str]] = None,
     include_generic: bool = False,
+    _already_seen: Optional[Set[Any]] = None,
 ) -> Type[Any]:
     """Resolve annotations that may be string based into real objects.
 
@@ -132,32 +140,50 @@ def de_stringify_annotation(
     etc.
 
     """
-
     # looked at typing.get_type_hints(), looked at pydantic.  We need much
     # less here, and we here try to not use any private typing internals
     # or construct ForwardRef objects which is documented as something
     # that should be avoided.
 
-    if (
-        is_fwd_ref(annotation)
-        and not cast(ForwardRef, annotation).__forward_evaluated__
-    ):
-        annotation = cast(ForwardRef, annotation).__forward_arg__
+    original_annotation = annotation
+
+    if is_fwd_ref(annotation):
+        annotation = annotation.__forward_arg__
 
     if isinstance(annotation, str):
         if str_cleanup_fn:
             annotation = str_cleanup_fn(annotation, originating_module)
 
-        annotation = eval_expression(annotation, originating_module)
+        annotation = eval_expression(
+            annotation, originating_module, locals_=locals_
+        )
 
-    if include_generic and is_generic(annotation):
+    if (
+        include_generic
+        and is_generic(annotation)
+        and not is_literal(annotation)
+    ):
+        if _already_seen is None:
+            _already_seen = set()
+
+        if annotation in _already_seen:
+            # only occurs recursively.  outermost return type
+            # will always be Type.
+            # the element here will be either ForwardRef or
+            # Optional[ForwardRef]
+            return original_annotation  # type: ignore
+        else:
+            _already_seen.add(annotation)
+
         elements = tuple(
             de_stringify_annotation(
                 cls,
                 elem,
                 originating_module,
+                locals_,
                 str_cleanup_fn=str_cleanup_fn,
                 include_generic=include_generic,
+                _already_seen=_already_seen,
             )
             for elem in annotation.__args__
         )
@@ -177,7 +203,12 @@ def _copy_generic_annotation_with(
         return annotation.__origin__[elements]  # type: ignore
 
 
-def eval_expression(expression: str, module_name: str) -> Any:
+def eval_expression(
+    expression: str,
+    module_name: str,
+    *,
+    locals_: Optional[Mapping[str, Any]] = None,
+) -> Any:
     try:
         base_globals: Dict[str, Any] = sys.modules[module_name].__dict__
     except KeyError as ke:
@@ -185,8 +216,9 @@ def eval_expression(expression: str, module_name: str) -> Any:
             f"Module {module_name} isn't present in sys.modules; can't "
             f"evaluate expression {expression}"
         ) from ke
+
     try:
-        annotation = eval(expression, base_globals, None)
+        annotation = eval(expression, base_globals, locals_)
     except Exception as err:
         raise NameError(
             f"Could not de-stringify annotation {expression!r}"
@@ -195,9 +227,14 @@ def eval_expression(expression: str, module_name: str) -> Any:
         return annotation
 
 
-def eval_name_only(name: str, module_name: str) -> Any:
+def eval_name_only(
+    name: str,
+    module_name: str,
+    *,
+    locals_: Optional[Mapping[str, Any]] = None,
+) -> Any:
     if "." in name:
-        return eval_expression(name, module_name)
+        return eval_expression(name, module_name, locals_=locals_)
 
     try:
         base_globals: Dict[str, Any] = sys.modules[module_name].__dict__
@@ -213,6 +250,12 @@ def eval_name_only(name: str, module_name: str) -> Any:
     try:
         return base_globals[name]
     except KeyError as ke:
+        # check in builtins as well to handle `list`, `set` or `dict`, etc.
+        try:
+            return builtins.__dict__[name]
+        except KeyError:
+            pass
+
         raise NameError(
             f"Could not locate name {name} in module {module_name}"
         ) from ke
@@ -231,12 +274,18 @@ def de_stringify_union_elements(
     cls: Type[Any],
     annotation: ArgsTypeProcotol,
     originating_module: str,
+    locals_: Mapping[str, Any],
+    *,
     str_cleanup_fn: Optional[Callable[[str, str], str]] = None,
 ) -> Type[Any]:
     return make_union_type(
         *[
             de_stringify_annotation(
-                cls, anno, originating_module, str_cleanup_fn
+                cls,
+                anno,
+                originating_module,
+                {},
+                str_cleanup_fn=str_cleanup_fn,
             )
             for anno in annotation.__args__
         ]
@@ -247,22 +296,32 @@ def is_pep593(type_: Optional[_AnnotationScanType]) -> bool:
     return type_ is not None and typing_get_origin(type_) is Annotated
 
 
+def is_literal(type_: _AnnotationScanType) -> bool:
+    return get_origin(type_) is Literal
+
+
+def is_newtype(type_: Optional[_AnnotationScanType]) -> TypeGuard[NewType]:
+    return hasattr(type_, "__supertype__")
+
+    # doesn't work in 3.8, 3.7 as it passes a closure, not an
+    # object instance
+    # return isinstance(type_, NewType)
+
+
 def is_generic(type_: _AnnotationScanType) -> TypeGuard[GenericProtocol[Any]]:
     return hasattr(type_, "__args__") and hasattr(type_, "__origin__")
 
 
-def flatten_generic(
-    type_: Union[GenericProtocol[Any], Type[Any]]
-) -> Type[Any]:
-    if is_generic(type_):
-        return type_.__origin__
-    else:
-        return cast("Type[Any]", type_)
+def flatten_newtype(type_: NewType) -> Type[Any]:
+    super_type = type_.__supertype__
+    while is_newtype(super_type):
+        super_type = super_type.__supertype__
+    return super_type
 
 
 def is_fwd_ref(
     type_: _AnnotationScanType, check_generic: bool = False
-) -> bool:
+) -> TypeGuard[ForwardRef]:
     if isinstance(type_, ForwardRef):
         return True
     elif check_generic and is_generic(type_):
@@ -297,7 +356,7 @@ def de_optionalize_union_types(
     """
 
     if is_fwd_ref(type_):
-        return de_optionalize_fwd_ref_union_types(cast(ForwardRef, type_))
+        return de_optionalize_fwd_ref_union_types(type_)
 
     elif is_optional(type_):
         typ = set(type_.__args__)

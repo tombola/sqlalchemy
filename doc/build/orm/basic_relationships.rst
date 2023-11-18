@@ -10,6 +10,7 @@ based on the use of the :class:`_orm.Mapped` annotation type.
 The setup for each of the following sections is as follows::
 
     from __future__ import annotations
+    from typing import List
 
     from sqlalchemy import ForeignKey
     from sqlalchemy import Integer
@@ -40,7 +41,7 @@ which is the most modern form of SQLAlchemy Declarative mapping::
         __tablename__ = "parent_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        children: Mapped[list["Child"]] = relationship(back_populates="parent")
+        children: Mapped[List["Child"]] = relationship(back_populates="parent")
 
 
     class Child(Base):
@@ -114,7 +115,7 @@ a collection of items represented by the child::
         __tablename__ = "parent_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        children: Mapped[list["Child"]] = relationship()
+        children: Mapped[List["Child"]] = relationship()
 
 
     class Child(Base):
@@ -134,7 +135,7 @@ as the value for :paramref:`_orm.relationship.back_populates` on the other::
         __tablename__ = "parent_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        children: Mapped[list["Child"]] = relationship(back_populates="parent")
+        children: Mapped[List["Child"]] = relationship(back_populates="parent")
 
 
     class Child(Base):
@@ -155,13 +156,13 @@ Using annotated Declarative mappings, the type of collection used for the
 :func:`_orm.relationship` is derived from the collection type passed to the
 :class:`_orm.Mapped` container type.  The example from the previous section
 may be written to use a ``set`` rather than a ``list`` for the
-``Parent.children`` collection using ``Mapped[set["Child"]]``::
+``Parent.children`` collection using ``Mapped[Set["Child"]]``::
 
     class Parent(Base):
         __tablename__ = "parent_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        children: Mapped[set["Child"]] = relationship(back_populates="parent")
+        children: Mapped[Set["Child"]] = relationship(back_populates="parent")
 
 When using non-annotated forms including imperative mappings, the Python
 class to use as a collection may be passed using the
@@ -236,7 +237,7 @@ as the value for :paramref:`_orm.relationship.back_populates` on the other::
         __tablename__ = "child_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        parents: Mapped[list["Parent"]] = relationship(back_populates="child")
+        parents: Mapped[List["Parent"]] = relationship(back_populates="child")
 
 .. _relationship_patterns_nullable_m2o:
 
@@ -265,7 +266,7 @@ case the configuration would look like::
         __tablename__ = "child_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        parents: Mapped[list["Parent"]] = relationship(back_populates="child")
+        parents: Mapped[List["Parent"]] = relationship(back_populates="child")
 
 Above, the column for ``Parent.child_id`` will be created in DDL to allow
 ``NULL`` values. When using :func:`_orm.mapped_column` with explicit typing
@@ -297,7 +298,7 @@ for background on this behavior.
           __tablename__ = "child_table"
 
           id: Mapped[int] = mapped_column(primary_key=True)
-          parents: Mapped[list[Parent]] = relationship(back_populates="child")
+          parents: Mapped[List[Parent]] = relationship(back_populates="child")
 
 .. _relationships_one_to_one:
 
@@ -343,13 +344,40 @@ are specific :ref:`cascade <unitofwork_cascades>` behaviors set up.
   row back.  If more than one row is returned, the ORM will emit a warning.
 
   However, the ``Child.parent`` side of the above relationship remains as a
-  "many-to-one" relationship and is unchanged, and there is no intrinsic system
-  within the ORM itself that prevents more than one ``Child`` object to be
-  created against the same ``Parent`` during persistence.  Instead, techniques
-  such as :ref:`unique constraints <schema_unique_constraint>` may be used in
-  the actual database schema to enforce this arrangement, where a unique
-  constraint on the ``Child.parent_id`` column would ensure that only
-  one ``Child`` row may refer to a particular ``Parent`` row at a time.
+  "many-to-one" relationship.  By itself, it will not detect assignment
+  of more than one ``Child``, unless the :paramref:`_orm.relationship.single_parent`
+  parameter is set, which may be useful::
+
+    class Child(Base):
+        __tablename__ = "child_table"
+
+        id: Mapped[int] = mapped_column(primary_key=True)
+        parent_id: Mapped[int] = mapped_column(ForeignKey("parent_table.id"))
+        parent: Mapped["Parent"] = relationship(back_populates="child", single_parent=True)
+
+  Outside of setting this parameter, the "one-to-many" side (which here is
+  one-to-one by convention) will also not reliably detect if more than one
+  ``Child`` is associated with a single ``Parent``, such as in the case where
+  the multiple ``Child`` objects are pending and not database-persistent.
+
+  Whether or not :paramref:`_orm.relationship.single_parent` is used, it is
+  recommended that the database schema include a :ref:`unique constraint
+  <schema_unique_constraint>` to indicate that the ``Child.parent_id`` column
+  should be unique, to ensure at the database level that only one ``Child`` row may refer
+  to a particular ``Parent`` row at a time (see :ref:`orm_declarative_table_configuration`
+  for background on the ``__table_args__`` tuple syntax)::
+
+    from sqlalchemy import UniqueConstraint
+
+
+    class Child(Base):
+        __tablename__ = "child_table"
+
+        id: Mapped[int] = mapped_column(primary_key=True)
+        parent_id: Mapped[int] = mapped_column(ForeignKey("parent_table.id"))
+        parent: Mapped["Parent"] = relationship(back_populates="child")
+
+        __table_args__ = (UniqueConstraint("parent_id"),)
 
 .. versionadded:: 2.0  The :func:`_orm.relationship` construct can derive
    the effective value of the :paramref:`_orm.relationship.uselist`
@@ -423,7 +451,7 @@ with which to link::
         __tablename__ = "left_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        children: Mapped[list[Child]] = relationship(secondary=association_table)
+        children: Mapped[List[Child]] = relationship(secondary=association_table)
 
 
     class Child(Base):
@@ -485,7 +513,7 @@ for each :func:`_orm.relationship` specify the common association table::
         __tablename__ = "left_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        children: Mapped[list[Child]] = relationship(
+        children: Mapped[List[Child]] = relationship(
             secondary=association_table, back_populates="parents"
         )
 
@@ -494,7 +522,7 @@ for each :func:`_orm.relationship` specify the common association table::
         __tablename__ = "right_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        parents: Mapped[list[Parent]] = relationship(
+        parents: Mapped[List[Parent]] = relationship(
             secondary=association_table, back_populates="children"
         )
 
@@ -522,7 +550,7 @@ such as ``set``::
         __tablename__ = "left_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        children: Mapped[set["Child"]] = relationship(secondary=association_table)
+        children: Mapped[Set["Child"]] = relationship(secondary=association_table)
 
 When using non-annotated forms including imperative mappings, as is
 the case with one-to-many, the Python
@@ -650,7 +678,7 @@ from ``Parent`` to ``Child`` makes explicit use of ``Association``::
     class Parent(Base):
         __tablename__ = "left_table"
         id: Mapped[int] = mapped_column(primary_key=True)
-        children: Mapped[list["Association"]] = relationship()
+        children: Mapped[List["Association"]] = relationship()
 
 
     class Child(Base):
@@ -688,13 +716,13 @@ constructs, linked to the existing ones using :paramref:`_orm.relationship.back_
     class Parent(Base):
         __tablename__ = "left_table"
         id: Mapped[int] = mapped_column(primary_key=True)
-        children: Mapped[list["Association"]] = relationship(back_populates="parent")
+        children: Mapped[List["Association"]] = relationship(back_populates="parent")
 
 
     class Child(Base):
         __tablename__ = "right_table"
         id: Mapped[int] = mapped_column(primary_key=True)
-        parents: Mapped[list["Association"]] = relationship(back_populates="child")
+        parents: Mapped[List["Association"]] = relationship(back_populates="child")
 
 Working with the association pattern in its direct form requires that child
 objects are associated with an association instance before being appended to
@@ -789,12 +817,12 @@ and ``Child.parent_associations -> Association.parent``::
         id: Mapped[int] = mapped_column(primary_key=True)
 
         # many-to-many relationship to Child, bypassing the `Association` class
-        children: Mapped[list["Child"]] = relationship(
+        children: Mapped[List["Child"]] = relationship(
             secondary="association_table", back_populates="parents"
         )
 
         # association between Parent -> Association -> Child
-        child_associations: Mapped[list["Association"]] = relationship(
+        child_associations: Mapped[List["Association"]] = relationship(
             back_populates="parent"
         )
 
@@ -805,12 +833,12 @@ and ``Child.parent_associations -> Association.parent``::
         id: Mapped[int] = mapped_column(primary_key=True)
 
         # many-to-many relationship to Parent, bypassing the `Association` class
-        parents: Mapped[list["Parent"]] = relationship(
+        parents: Mapped[List["Parent"]] = relationship(
             secondary="association_table", back_populates="children"
         )
 
         # association between Child -> Association -> Parent
-        parent_associations: Mapped[list["Association"]] = relationship(
+        parent_associations: Mapped[List["Association"]] = relationship(
             back_populates="child"
         )
 
@@ -858,12 +886,12 @@ additional association columns, as below::
         id: Mapped[int] = mapped_column(primary_key=True)
 
         # many-to-many relationship to Child, bypassing the `Association` class
-        children: Mapped[list["Child"]] = relationship(
+        children: Mapped[List["Child"]] = relationship(
             secondary="association_table", back_populates="parents", viewonly=True
         )
 
         # association between Parent -> Association -> Child
-        child_associations: Mapped[list["Association"]] = relationship(
+        child_associations: Mapped[List["Association"]] = relationship(
             back_populates="parent"
         )
 
@@ -874,12 +902,12 @@ additional association columns, as below::
         id: Mapped[int] = mapped_column(primary_key=True)
 
         # many-to-many relationship to Parent, bypassing the `Association` class
-        parents: Mapped[list["Parent"]] = relationship(
+        parents: Mapped[List["Parent"]] = relationship(
             secondary="association_table", back_populates="children", viewonly=True
         )
 
         # association between Child -> Association -> Parent
-        parent_associations: Mapped[list["Association"]] = relationship(
+        parent_associations: Mapped[List["Association"]] = relationship(
             back_populates="child"
         )
 
@@ -919,7 +947,7 @@ at runtime only as a string::
     class Parent(Base):
         # ...
 
-        children: Mapped[list["Child"]] = relationship(back_populates="parent")
+        children: Mapped[List["Child"]] = relationship(back_populates="parent")
 
 
     class Child(Base):
@@ -944,10 +972,10 @@ the :func:`_orm.relationship` construct::
     )
 
 These string names are resolved into classes in the mapper resolution stage,
-which is an internal process that occurs typically after all mappings have
-been defined and is normally triggered by the first usage of the mappings
-themselves.     The :class:`_orm.registry` object is the container in which
-these names are stored and resolved to the mapped classes they refer towards.
+which is an internal process that occurs typically after all mappings have been
+defined and is normally triggered by the first usage of the mappings
+themselves.  The :class:`_orm.registry` object is the container where these
+names are stored and resolved to the mapped classes to which they refer.
 
 In addition to the main class argument for :func:`_orm.relationship`,
 other arguments which depend upon the columns present on an as-yet
@@ -971,7 +999,7 @@ package, including expression functions like :func:`_sql.desc` and
     class Parent(Base):
         # ...
 
-        children: Mapped[list["Child"]] = relationship(
+        children: Mapped[List["Child"]] = relationship(
             order_by="desc(Child.email_address)",
             primaryjoin="Parent.id == Child.parent_id",
         )
@@ -983,7 +1011,7 @@ within any of these string expressions::
     class Parent(Base):
         # ...
 
-        children: Mapped[list["myapp.mymodel.Child"]] = relationship(
+        children: Mapped[List["myapp.mymodel.Child"]] = relationship(
             order_by="desc(myapp.mymodel.Child.email_address)",
             primaryjoin="myapp.mymodel.Parent.id == myapp.mymodel.Child.parent_id",
         )
@@ -1004,7 +1032,7 @@ name within the :class:`_orm.registry`::
     class Parent(Base):
         # ...
 
-        children: Mapped[list["Child"]] = relationship(
+        children: Mapped[List["Child"]] = relationship(
             "myapp.mymodel.Child",
             order_by="desc(myapp.mymodel.Child.email_address)",
             primaryjoin="myapp.mymodel.Parent.id == myapp.mymodel.Child.parent_id",
@@ -1018,7 +1046,7 @@ we can specify ``model1.Child`` or ``model2.Child``::
     class Parent(Base):
         # ...
 
-        children: Mapped[list["Child"]] = relationship(
+        children: Mapped[List["Child"]] = relationship(
             "model1.Child",
             order_by="desc(mymodel1.Child.email_address)",
             primaryjoin="Parent.id == model1.Child.parent_id",
@@ -1045,8 +1073,8 @@ like the following::
     class Parent(Base):
         # ...
 
-        children: Mapped[list["Child"]] = relationship(
-            _resolve_child_model(),
+        children: Mapped[List["Child"]] = relationship(
+            _resolve_child_model,
             order_by=lambda: desc(_resolve_child_model().email_address),
             primaryjoin=lambda: Parent.id == _resolve_child_model().parent_id,
         )
@@ -1135,12 +1163,7 @@ Many-to-many relationships make use of the
 :paramref:`_orm.relationship.secondary` parameter, which ordinarily
 indicates a reference to a typically non-mapped :class:`_schema.Table`
 object or other Core selectable object.  Late evaluation
-using either a lambda callable or string name is supported, where string
-resolution works by evaluation of given Python expression which links
-identifier names to same-named :class:`_schema.Table` objects that
-are present in the same
-:class:`_schema.MetaData` collection referred towards by the current
-:class:`_orm.registry`.
+using a lambda callable is typical.
 
 For the example given at :ref:`relationships_many_to_many`, if we assumed
 that the ``association_table`` :class:`.Table` object would be defined at a point later on in the
@@ -1151,13 +1174,20 @@ using a lambda as::
         __tablename__ = "left_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        children: Mapped[list["Child"]] = relationship(
+        children: Mapped[List["Child"]] = relationship(
             "Child", secondary=lambda: association_table
         )
 
-Or to illustrate locating the same :class:`.Table` object by name,
-the name of the :class:`.Table` is used as the argument.
-From a Python perspective, this is a Python expression evaluated as a variable
+As a shortcut for table names that are also **valid Python identifiers**, the
+:paramref:`_orm.relationship.secondary` parameter may also be passed as a
+string, where resolution works by evaluation of the string as a Python
+expression, with simple identifier names linked to same-named
+:class:`_schema.Table` objects that are present in the same
+:class:`_schema.MetaData` collection referenced by the current
+:class:`_orm.registry`.
+
+In the example below, the expression
+``"association_table"`` is evaluated as a variable
 named "association_table" that is resolved against the table names within
 the :class:`.MetaData` collection::
 
@@ -1165,10 +1195,19 @@ the :class:`.MetaData` collection::
         __tablename__ = "left_table"
 
         id: Mapped[int] = mapped_column(primary_key=True)
-        children: Mapped[list["Child"]] = relationship(secondary="association_table")
+        children: Mapped[List["Child"]] = relationship(secondary="association_table")
+
+.. note:: When passed as a string, the name passed to
+    :paramref:`_orm.relationship.secondary` **must be a valid Python identifier**
+    starting with a letter and containing only alphanumeric characters or
+    underscores.   Other characters such as dashes etc. will be interpreted
+    as Python operators which will not resolve to the name given.  Please consider
+    using lambda expressions rather than strings for improved clarity.
 
 .. warning:: When passed as a string,
     :paramref:`_orm.relationship.secondary` argument is interpreted using Python's
     ``eval()`` function, even though it's typically the name of a table.
     **DO NOT PASS UNTRUSTED INPUT TO THIS STRING**.
+
+
 

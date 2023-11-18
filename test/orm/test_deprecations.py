@@ -3,11 +3,14 @@ from unittest.mock import Mock
 
 import sqlalchemy as sa
 from sqlalchemy import cast
+from sqlalchemy import column
 from sqlalchemy import desc
 from sqlalchemy import event
 from sqlalchemy import exc as sa_exc
 from sqlalchemy import ForeignKey
 from sqlalchemy import func
+from sqlalchemy import Identity
+from sqlalchemy import inspect
 from sqlalchemy import Integer
 from sqlalchemy import literal_column
 from sqlalchemy import MetaData
@@ -31,6 +34,8 @@ from sqlalchemy.orm import deferred
 from sqlalchemy.orm import foreign
 from sqlalchemy.orm import instrumentation
 from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import Mapped
+from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import scoped_session
 from sqlalchemy.orm import Session
@@ -48,12 +53,15 @@ from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import eq_ignore_whitespace
 from sqlalchemy.testing import expect_deprecated
+from sqlalchemy.testing import expect_raises_message
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
 from sqlalchemy.testing import is_true
 from sqlalchemy.testing import mock
+from sqlalchemy.testing.entities import ComparableEntity
 from sqlalchemy.testing.fixtures import CacheKeyFixture
 from sqlalchemy.testing.fixtures import fixture_session
+from sqlalchemy.testing.fixtures import RemoveORMEventsGlobally
 from sqlalchemy.testing.schema import Column
 from sqlalchemy.testing.schema import Table
 from . import _fixtures
@@ -61,7 +69,6 @@ from .inheritance import _poly_fixtures
 from .inheritance._poly_fixtures import Manager
 from .inheritance._poly_fixtures import Person
 from .test_deferred import InheritanceTest as _deferred_InheritanceTest
-from .test_events import _RemoveListeners
 from .test_options import PathTest as OptionsPathTest
 from .test_options import PathTest
 from .test_options import QueryTest as OptionsQueryTest
@@ -294,7 +301,9 @@ class PickleTest(fixtures.MappedTest):
         )
 
         # these must be module level for pickling
-        from .test_pickled import User, Address, Dingaling
+        from .test_pickled import Address
+        from .test_pickled import Dingaling
+        from .test_pickled import User
 
         self.mapper_registry.map_imperatively(
             User,
@@ -384,6 +393,97 @@ class SynonymTest(QueryTest, AssertsCompiledSQL):
         cls.mapper_registry.map_imperatively(Keyword, keywords)
 
 
+class MiscDeprecationsTest(fixtures.TestBase):
+    def test_unloaded_expirable(self, decl_base):
+        class A(decl_base):
+            __tablename__ = "a"
+            id = mapped_column(Integer, Identity(), primary_key=True)
+            x = mapped_column(
+                Integer,
+            )
+            y = mapped_column(Integer, deferred=True)
+
+        decl_base.metadata.create_all(testing.db)
+        with Session(testing.db) as sess:
+            obj = A(x=1, y=2)
+            sess.add(obj)
+            sess.commit()
+
+        with expect_deprecated(
+            "The InstanceState.unloaded_expirable attribute is deprecated.  "
+            "Please use InstanceState.unloaded."
+        ):
+            eq_(inspect(obj).unloaded, {"id", "x", "y"})
+            eq_(inspect(obj).unloaded_expirable, inspect(obj).unloaded)
+
+    def test_evaluator_is_private(self):
+        with expect_deprecated(
+            "Direct use of 'EvaluatorCompiler' is not supported, and this "
+            "name will be removed in a future release.  "
+            "'_EvaluatorCompiler' is for internal use only"
+        ):
+            from sqlalchemy.orm.evaluator import EvaluatorCompiler
+
+        from sqlalchemy.orm.evaluator import _EvaluatorCompiler
+
+        is_(EvaluatorCompiler, _EvaluatorCompiler)
+
+    @testing.combinations(
+        ("init", True),
+        ("kw_only", True, testing.requires.python310),
+        ("default", 5),
+        ("default_factory", lambda: 10),
+        argnames="paramname, value",
+    )
+    def test_column_property_dc_attributes(self, paramname, value):
+        with expect_deprecated(
+            rf"The column_property.{paramname} parameter is deprecated "
+            r"for column_property\(\)",
+        ):
+            column_property(column("q"), **{paramname: value})
+
+    @testing.requires.python310
+    def test_column_property_dc_attributes_still_function(self, dc_decl_base):
+        with expect_deprecated(
+            r"The column_property.init parameter is deprecated "
+            r"for column_property\(\)",
+            r"The column_property.default parameter is deprecated "
+            r"for column_property\(\)",
+            r"The column_property.default_factory parameter is deprecated "
+            r"for column_property\(\)",
+            r"The column_property.kw_only parameter is deprecated "
+            r"for column_property\(\)",
+        ):
+
+            class MyClass(dc_decl_base):
+                __tablename__ = "a"
+
+                id: Mapped[int] = mapped_column(primary_key=True, init=False)
+                data: Mapped[str] = mapped_column()
+
+                const1: Mapped[str] = column_property(
+                    data + "asdf", init=True, default="foobar"
+                )
+                const2: Mapped[str] = column_property(
+                    data + "asdf",
+                    init=True,
+                    default_factory=lambda: "factory_foo",
+                )
+                const3: Mapped[str] = column_property(
+                    data + "asdf", init=True, kw_only=True
+                )
+
+            m1 = MyClass(data="d1", const3="c3")
+            eq_(m1.const1, "foobar")
+            eq_(m1.const2, "factory_foo")
+            eq_(m1.const3, "c3")
+
+        with expect_raises_message(
+            TypeError, "missing 1 required keyword-only argument: 'const3'"
+        ):
+            MyClass(data="d1")
+
+
 class DeprecatedQueryTest(_fixtures.FixtureTest, AssertsCompiledSQL):
     __dialect__ = "default"
 
@@ -411,7 +511,8 @@ class DeprecatedQueryTest(_fixtures.FixtureTest, AssertsCompiledSQL):
         s = addresses.select()
         sess = fixture_session()
         with testing.expect_deprecated(
-            "Implicit coercion of SELECT and " "textual SELECT constructs"
+            "Implicit coercion of SELECT and textual SELECT constructs",
+            "An alias is being generated automatically against joined entity",
         ):
             self.assert_compile(
                 sess.query(User).join(s, User.addresses),
@@ -741,7 +842,7 @@ class DeprecatedMapperTest(
 
         assert_col = []
 
-        class User(fixtures.ComparableEntity):
+        class User(ComparableEntity):
             def _get_name(self):
                 assert_col.append(("get", self._name))
                 return self._name
@@ -767,6 +868,37 @@ class DeprecatedMapperTest(
             eq_(assert_col, [("get", "jack")], str(assert_col))
 
         self.sql_count_(1, go)
+
+    @testing.variation("prop_type", ["relationship", "col_prop"])
+    def test_prop_replacement_warns(self, prop_type: testing.Variation):
+        users, User = self.tables.users, self.classes.User
+        addresses, Address = self.tables.addresses, self.classes.Address
+
+        m = self.mapper(
+            User,
+            users,
+            properties={
+                "foo": column_property(users.c.name),
+                "addresses": relationship(Address),
+            },
+        )
+        self.mapper(Address, addresses)
+
+        if prop_type.relationship:
+            key = "addresses"
+            new_prop = relationship(Address)
+        elif prop_type.col_prop:
+            key = "foo"
+            new_prop = column_property(users.c.name)
+        else:
+            prop_type.fail()
+
+        with expect_deprecated(
+            f"Property User.{key} on Mapper|User|users being replaced "
+            f"with new property User.{key}; the old property will "
+            "be discarded",
+        ):
+            m.add_property(key, new_prop)
 
 
 class DeprecatedOptionAllTest(OptionsPathTest, _fixtures.FixtureTest):
@@ -1075,7 +1207,6 @@ class NonPrimaryRelationshipLoaderTest(_fixtures.FixtureTest):
         self._run_double_test(1)
 
     def test_selectin(self):
-
         users, orders, User, Address, Order, addresses = (
             self.tables.users,
             self.tables.orders,
@@ -1132,7 +1263,6 @@ class NonPrimaryRelationshipLoaderTest(_fixtures.FixtureTest):
         self._run_double_test(4)
 
     def test_subqueryload(self):
-
         users, orders, User, Address, Order, addresses = (
             self.tables.users,
             self.tables.orders,
@@ -1515,7 +1645,7 @@ class InstancesTest(QueryTest, AssertsCompiledSQL):
         def go():
             with testing.expect_deprecated(
                 "The AliasOption object is not necessary for entities to be "
-                "matched up to a query"
+                "matched up to a query",
             ):
                 result = (
                     q.options(
@@ -1547,7 +1677,8 @@ class InstancesTest(QueryTest, AssertsCompiledSQL):
 
         def go():
             with testing.expect_deprecated(
-                r"Using the Query.instances\(\) method without a context"
+                r"The Query.instances\(\) method is deprecated",
+                r"Using the Query.instances\(\) method without a context",
             ):
                 result = list(
                     q.options(contains_eager(User.addresses)).instances(
@@ -1562,7 +1693,8 @@ class InstancesTest(QueryTest, AssertsCompiledSQL):
 
         def go():
             with testing.expect_deprecated(
-                r"Using the Query.instances\(\) method without a context"
+                r"The Query.instances\(\) method is deprecated",
+                r"Using the Query.instances\(\) method without a context",
             ):
                 result = list(
                     q.options(contains_eager(User.addresses)).instances(
@@ -1597,7 +1729,6 @@ class InstancesTest(QueryTest, AssertsCompiledSQL):
                 r"Using the Query.instances\(\) method without a context",
                 r"The Query.instances\(\) method is deprecated and will be "
                 r"removed in a future release.",
-                raise_on_any_unexpected=True,
             ):
                 result = list(
                     q.options(
@@ -1644,7 +1775,6 @@ class InstancesTest(QueryTest, AssertsCompiledSQL):
                 r"Using the Query.instances\(\) method without a context",
                 r"The Query.instances\(\) method is deprecated and will be "
                 r"removed in a future release.",
-                raise_on_any_unexpected=True,
             ):
                 result = list(
                     q.options(
@@ -1659,7 +1789,7 @@ class InstancesTest(QueryTest, AssertsCompiledSQL):
         self.assert_sql_count(testing.db, go, 1)
 
 
-class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
+class SessionEventsTest(RemoveORMEventsGlobally, _fixtures.FixtureTest):
     run_inserts = None
 
     def test_on_bulk_update_hook(self):

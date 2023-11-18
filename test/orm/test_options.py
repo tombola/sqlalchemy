@@ -28,12 +28,15 @@ from sqlalchemy.orm import undefer
 from sqlalchemy.orm import util as orm_util
 from sqlalchemy.orm import with_polymorphic
 from sqlalchemy.testing import fixtures
+from sqlalchemy.testing import is_not
 from sqlalchemy.testing.assertions import assert_raises_message
 from sqlalchemy.testing.assertions import AssertsCompiledSQL
 from sqlalchemy.testing.assertions import emits_warning
 from sqlalchemy.testing.assertions import eq_
 from sqlalchemy.testing.assertions import expect_raises_message
 from sqlalchemy.testing.fixtures import fixture_session
+from sqlalchemy.testing.pickleable import Address
+from sqlalchemy.testing.pickleable import User
 from test.orm import _fixtures
 from .inheritance._poly_fixtures import _Polymorphic
 from .inheritance._poly_fixtures import Company
@@ -1010,7 +1013,7 @@ class OptionsNoPropTest(_fixtures.FixtureTest):
         self._assert_eager_with_entity_exception(
             [User],
             lambda: (joinedload(User.addresses).joinedload(User.orders),),
-            r'ORM mapped attribute "User.orders" does not link '
+            r'ORM mapped entity or attribute "User.orders" does not link '
             r'from relationship "User.addresses"',
         )
 
@@ -1024,7 +1027,7 @@ class OptionsNoPropTest(_fixtures.FixtureTest):
                     User.orders.of_type(Order)
                 ),
             ),
-            r'ORM mapped attribute "User.orders" does not link '
+            r'ORM mapped entity or attribute "User.orders" does not link '
             r'from relationship "User.addresses"',
         )
 
@@ -1151,7 +1154,8 @@ class OptionsNoPropTestInh(_Polymorphic):
         e1 = with_polymorphic(Person, [Engineer])
         assert_raises_message(
             sa.exc.ArgumentError,
-            r'ORM mapped attribute "Manager.manager_name" does not link from '
+            r'ORM mapped entity or attribute "Manager.manager_name" does '
+            r"not link from "
             r'relationship "Company.employees.'
             r'of_type\(with_polymorphic\(Person, \[Engineer\]\)\)".$',
             lambda: s.query(Company)
@@ -1168,7 +1172,8 @@ class OptionsNoPropTestInh(_Polymorphic):
 
         assert_raises_message(
             sa.exc.ArgumentError,
-            r'ORM mapped attribute "Manager.manager_name" does not link from '
+            r'ORM mapped entity or attribute "Manager.manager_name" does '
+            r"not link from "
             r'relationship "Company.employees.'
             r'of_type\(Mapper\[Engineer\(engineers\)\]\)".$',
             lambda: s.query(Company)
@@ -1187,7 +1192,8 @@ class OptionsNoPropTestInh(_Polymorphic):
         # that doesn't get mixed up here
         assert_raises_message(
             sa.exc.ArgumentError,
-            r'ORM mapped attribute "Manager.status" does not link from '
+            r'ORM mapped entity or attribute "Manager.status" does '
+            r"not link from "
             r'relationship "Company.employees.'
             r'of_type\(Mapper\[Engineer\(engineers\)\]\)".$',
             lambda: s.query(Company)
@@ -1206,7 +1212,8 @@ class OptionsNoPropTestInh(_Polymorphic):
 
         assert_raises_message(
             sa.exc.ArgumentError,
-            r'ORM mapped attribute "Manager.manager_name" does not link from '
+            r'ORM mapped entity or attribute "Manager.manager_name" does '
+            r"not link from "
             r'relationship "Company.employees.'
             r'of_type\(with_polymorphic\(Person, \[Manager\]\)\)".$',
             lambda: s.query(Company)
@@ -1218,30 +1225,29 @@ class OptionsNoPropTestInh(_Polymorphic):
             ._compile_state(),
         )
 
-    def test_missing_attr_is_missing_of_type_for_alias(self):
+    @testing.variation("use_options", [True, False])
+    def test_missing_attr_is_missing_of_type_for_subtype(self, use_options):
         s = fixture_session()
 
-        pa = aliased(Person)
-
-        assert_raises_message(
+        with expect_raises_message(
             sa.exc.ArgumentError,
-            r'ORM mapped attribute "aliased\(Person\).name" does not link '
-            r'from relationship "Company.employees".  Did you mean to use '
-            r'"Company.employees.of_type\(aliased\(Person\)\)\"?',
-            lambda: s.query(Company)
-            .options(joinedload(Company.employees).load_only(pa.name))
-            ._compile_state(),
-        )
-
-        q = s.query(Company).options(
-            joinedload(Company.employees.of_type(pa)).load_only(pa.name)
-        )
-        orig_path = inspect(Company)._path_registry[
-            Company.employees.property
-        ][inspect(pa)][pa.name.property]
-        key = ("loader", orig_path.natural_path)
-        loader = q._compile_state().attributes[key]
-        eq_(loader.path, orig_path)
+            r"ORM mapped entity or attribute "
+            r'(?:"Mapper\[Engineer\(engineers\)\]"|"Engineer.engineer_name") '
+            r'does not link from relationship "Company.employees".  Did you '
+            r'mean to use "Company.employees.of_type\(Engineer\)" '
+            r'or "loadopt.options'
+            r'\(selectin_polymorphic\(Person, \[Engineer\]\), ...\)" \?',
+        ):
+            if use_options:
+                s.query(Company).options(
+                    joinedload(Company.employees).options(
+                        defer(Engineer.engineer_name)
+                    )
+                )._compile_state()
+            else:
+                s.query(Company).options(
+                    joinedload(Company.employees).defer(Engineer.engineer_name)
+                )._compile_state()
 
 
 class PickleTest(fixtures.MappedTest):
@@ -1263,8 +1269,6 @@ class PickleTest(fixtures.MappedTest):
 
     @testing.fixture
     def user_address_fixture(self, registry):
-        from sqlalchemy.testing.pickleable import User, Address
-
         registry.map_imperatively(
             User,
             self.tables.users,
@@ -1285,20 +1289,18 @@ class PickleTest(fixtures.MappedTest):
     def test_pickle_relationship_loader(self, user_address_fixture):
         User, Address = user_address_fixture
 
-        for i in range(3):
-            opt = joinedload(User.addresses)
+        opt = joinedload(User.addresses)
 
-            q1 = fixture_session().query(User).options(opt)
-            c1 = q1._compile_context()
+        pickled = pickle.dumps(opt)
 
-            pickled = pickle.dumps(opt)
+        opt2 = pickle.loads(pickled)
 
-            opt2 = pickle.loads(pickled)
+        is_not(opt, opt2)
+        assert isinstance(opt, Load)
+        assert isinstance(opt2, Load)
 
-            q2 = fixture_session().query(User).options(opt2)
-            c2 = q2._compile_context()
-
-            eq_(c1.attributes, c2.attributes)
+        for k in opt.__slots__:
+            eq_(getattr(opt, k), getattr(opt2, k))
 
 
 class LocalOptsTest(PathTest, QueryTest):
@@ -1499,7 +1501,8 @@ class SubOptionsTest(PathTest, QueryTest):
 
         with expect_raises_message(
             sa.exc.ArgumentError,
-            r'ORM mapped attribute "Item.keywords" does not link from '
+            r'ORM mapped entity or attribute "Item.keywords" does '
+            r"not link from "
             r'relationship "User.orders"',
         ):
             [
@@ -1508,8 +1511,9 @@ class SubOptionsTest(PathTest, QueryTest):
             ]
         with expect_raises_message(
             sa.exc.ArgumentError,
-            r'Attribute "Item.keywords" does not link from '
-            r'element "Mapper\[Order\(orders\)\]"',
+            r'ORM mapped entity or attribute "Item.keywords" does '
+            r"not link from "
+            r'relationship "User.orders"',
         ):
             joinedload(User.orders).options(
                 joinedload(Item.keywords), joinedload(Order.items)
